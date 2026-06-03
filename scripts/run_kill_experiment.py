@@ -41,14 +41,45 @@ def _levenshtein(a: str, b: str) -> int:
 
 
 def anls(pred: str, golds, threshold: float = 0.5) -> float:
-    pred = pred.strip().lower()
+    pred = _normalize(pred)
     best = 0.0
-    for g in golds:
-        g = str(g).strip().lower()
+    for g in _as_answer_list(golds):
+        g = _normalize(g)
         denom = max(len(pred), len(g), 1)
         score = 1.0 - _levenshtein(pred, g) / denom
         best = max(best, score if score >= threshold else 0.0)
     return best
+
+
+def _normalize(s) -> str:
+    """Lowercase, strip surrounding whitespace/punctuation/quotes (DocVQA-style)."""
+    import re
+    s = str(s).strip().lower()
+    s = re.sub(r"^[\s\"'.;:,]+|[\s\"'.;:,]+$", "", s)
+    return s
+
+
+def _as_answer_list(golds):
+    """DocVQA answers come as list[str], a single str, or a dict with 'answer(s)'.
+    Normalize all of these to a flat list of strings."""
+    if golds is None:
+        return []
+    if isinstance(golds, dict):
+        golds = golds.get("answers") or golds.get("answer") or list(golds.values())
+    if isinstance(golds, (str, bytes)):
+        return [golds]
+    try:
+        return [g for g in golds]
+    except TypeError:
+        return [golds]
+
+
+def _clean_generation(text: str) -> str:
+    """Strip common verbose prefixes so a short gold answer can match."""
+    import re
+    t = text.strip()
+    t = re.sub(r"(?i)^(the\s+answer\s+is|answer\s*:|it\s+is|this\s+is)\s*", "", t)
+    return t.splitlines()[0].strip() if t else t
 
 
 def load_docvqa(subset: int):
@@ -75,7 +106,8 @@ def main():
     p.add_argument("--rho", type=float, default=0.25)
     p.add_argument("--stride", type=int, default=2)
     p.add_argument("--arms", default="dense,uniform,csf")
-    p.add_argument("--max_new_tokens", type=int, default=64)
+    p.add_argument("--max_new_tokens", type=int, default=32)
+    p.add_argument("--debug", type=int, default=0, help="print this many (q, gold, pred, anls) samples")
     args = p.parse_args()
 
     import torch
@@ -114,14 +146,17 @@ def main():
         else:
             raise ValueError(arm)
 
+    # Official DocVQA-style instruction: elicit a SHORT answer so ANLS can match.
+    SHORT_ANSWER = " Answer the question using a single word or phrase."
+
     @torch.no_grad()
     def run_arm(arm: str):
         configure(arm)
         tok_counts, scores = [], []
-        for r in data:
+        for si, r in enumerate(data):
             messages = [{"role": "user", "content": [
                 {"type": "image", "image": r["image"]},
-                {"type": "text", "text": r["question"]}]}]
+                {"type": "text", "text": r["question"] + SHORT_ANSWER}]}]
             text = proc.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = proc(text=[text], images=[r["image"]], return_tensors="pt").to("cuda")
             thw = inputs["image_grid_thw"]
@@ -130,7 +165,12 @@ def main():
             # effective visual tokens: dense = full; compressed arms = measured by the module
             tok_counts.append(n_vis if arm == "dense" else module.last_n_out)
             gen = proc.batch_decode(out[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
-            scores.append(anls(gen, r["answers"]))
+            pred = _clean_generation(gen)
+            sc = anls(pred, r["answers"])
+            scores.append(sc)
+            if args.debug and si < args.debug:
+                print(f"  [{arm}] Q={r['question'][:50]!r} "
+                      f"gold={_as_answer_list(r['answers'])[:3]} pred={pred[:50]!r} anls={sc:.3f}")
         return sum(scores) / len(scores), sum(tok_counts) / len(tok_counts)
 
     print(f"\n{'arm':<10}{'ANLS':>10}{'avg_vis_tok':>14}")
