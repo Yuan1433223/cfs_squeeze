@@ -44,16 +44,22 @@ class CSFSqueeze(nn.Module):
         )
         self.high_index = config.num_bases - 1   # last basis is the high-frequency one
         # Experiment controls (do not affect the default frequency-aware path):
-        #   selection_mode: "freq" (default) | "random" -> the content-homogeneous
-        #     control arm exempts the SAME rho fraction but chosen content-agnostically,
-        #     giving matched token counts to isolate frequency-awareness (Sec. 4.6).
+        #   selection_mode:
+        #     "freq"   (default) -> P^high from the LEARNED router (Eq. 8); needs training.
+        #     "energy"           -> training-free probe: exempt tokens by the high-frequency
+        #                           operator energy ||X_hat_4[i]||, directly content-based.
+        #     "random"           -> content-homogeneous control: exempt the SAME rho fraction
+        #                           chosen content-agnostically (matched token count).
         #   enabled: when False the patched forward bypasses compression (dense arm).
         self.selection_mode = "freq"
         self.enabled = True
         self.last_n_in = 0      # token counts of the most recent forward (for logging)
         self.last_n_out = 0
 
-    def _saliency(self, pi: torch.Tensor, n: int, device, dtype) -> torch.Tensor:
+    def _saliency(self, pi, operators, n, device, dtype) -> torch.Tensor:
+        if self.selection_mode == "energy":
+            # high-frequency operator is the last basis; per-token L2 energy.
+            return operators[self.high_index].float().norm(dim=-1).to(device=device, dtype=dtype)
         if self.selection_mode == "random":
             g = torch.Generator(device="cpu").manual_seed(n)  # deterministic per resolution
             return torch.rand(n, generator=g).to(device=device, dtype=dtype)
@@ -75,7 +81,7 @@ class CSFSqueeze(nn.Module):
         operators = compute_operators(feat, height, width, cfg.low_freq_kernel)  # [K, N, D]
         pi = self.router(feat)                                                   # [N, M, K]
         modulated = modulate(operators, pi, cfg.num_heads)                       # [N, D]
-        p_high = self._saliency(pi, feat.shape[0], feat.device, feat.dtype)      # [N]
+        p_high = self._saliency(pi, operators, feat.shape[0], feat.device, feat.dtype)  # [N]
 
         plan = build_plan(p_high, height, width, s, rho)
         compressed = plan.apply(modulated)

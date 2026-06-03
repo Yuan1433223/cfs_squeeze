@@ -15,6 +15,14 @@ diagnostics tell us exactly what to adjust.
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+
+# Make `import csf_squeeze` work when run as `python scripts/smoke_test_gpu.py`
+# (sys.path[0] would otherwise be the scripts/ dir, not the repo root).
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 
 def make_demo_image(size=(896, 1280)):
@@ -38,7 +46,11 @@ def main():
 
     import torch
     from modelscope import snapshot_download
-    from transformers import AutoProcessor, AutoModelForImageTextToText
+    from transformers import AutoProcessor
+    try:                                  # specific class is most robust across versions
+        from transformers import Qwen3VLForConditionalGeneration as ModelCls
+    except Exception:
+        from transformers import AutoModelForImageTextToText as ModelCls
     import transformers
 
     from csf_squeeze.integrate_qwen3vl import (
@@ -51,9 +63,8 @@ def main():
 
     model_dir = snapshot_download(args.model)
     proc = AutoProcessor.from_pretrained(model_dir)
-    model = AutoModelForImageTextToText.from_pretrained(
-        model_dir, dtype=torch.bfloat16, device_map="cuda"
-    ).eval()
+    # Avoid device_map (needs a recent accelerate); load then move to cuda.
+    model = ModelCls.from_pretrained(model_dir, dtype=torch.bfloat16).to("cuda").eval()
     inner = model.model
     cfg = model.config
     print(f"[model] {type(model).__name__}  image_token_id={cfg.image_token_id}  "

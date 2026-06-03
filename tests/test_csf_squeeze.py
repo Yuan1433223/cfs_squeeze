@@ -186,6 +186,43 @@ def check_end2end_with_deepstack():
     assert mod.router.w_g.weight.grad is not None, "no gradient after batch end-to-end"
 
 
+def check_selection_modes():
+    """energy/random/freq all compress; energy exempts the highest-frequency tokens."""
+    h, w, d, m = 8, 8, 16, 4
+    cfg = CSFSqueezeConfig(hidden_size=d, num_heads=m, keep_ratio=0.25, downsample_stride=2)
+    mod = CSFSqueeze(cfg)
+    g = torch.Generator().manual_seed(123)                    # local RNG: order-independent
+    # non-degenerate feature so per-token saliencies are distinct (no quantile ties).
+    feat = torch.randn(h * w, d, generator=g)
+    for mode in ["energy", "random", "freq"]:
+        mod.selection_mode = mode
+        out = mod(feat, h, w)
+        assert out.compressed.shape[0] < h * w, f"{mode} did not compress"
+        assert mod.last_n_in == h * w and mod.last_n_out == out.compressed.shape[0]
+    # energy mode must exempt tokens carrying high-frequency content: inject sharp
+    # spikes on a smooth baseline and check they survive compression.
+    feat2 = torch.linspace(0, 1, d).expand(h * w, d).clone()
+    spikes = [5, 17, 40, 63]
+    feat2[spikes] += torch.randn(len(spikes), d, generator=g) * 5.0
+    mod.selection_mode = "energy"
+    out = mod(feat2, h, w)
+    kept = set(out.plan.keep_idx.tolist())
+    assert set(spikes).issubset(kept), f"energy mode failed to exempt high-freq tokens: {kept}"
+
+
+def check_controllable_budget_under_ties():
+    """Even with all-equal saliencies (degenerate region), exempt count == round(rho*N)."""
+    h, w, d = 8, 8, 16
+    n = h * w
+    x = torch.randn(n, d)
+    p_tie = torch.zeros(n)                                    # all saliencies identical
+    for rho in (0.25, 0.5):
+        plan = build_plan(p_tie, h, w, stride=2, keep_ratio=rho)
+        assert plan.n_keep == round(rho * n), \
+            f"ties broke the budget: n_keep={plan.n_keep}, expected {round(rho*n)}"
+        assert plan.n_out < n, "no compression under ties"
+
+
 ALL_CHECKS = [
     check_topology_roundtrip,
     check_operators_identity_lemma,
@@ -198,6 +235,8 @@ ALL_CHECKS = [
     check_lambda_schedule,
     check_module_grad_flow,
     check_end2end_with_deepstack,
+    check_selection_modes,
+    check_controllable_budget_under_ties,
 ]
 
 
@@ -213,3 +252,5 @@ def test_entropy_loss():                  check_entropy_loss()
 def test_lambda_schedule():               check_lambda_schedule()
 def test_module_grad_flow():              check_module_grad_flow()
 def test_end2end_with_deepstack():        check_end2end_with_deepstack()
+def test_selection_modes():               check_selection_modes()
+def test_controllable_budget_under_ties(): check_controllable_budget_under_ties()

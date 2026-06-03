@@ -64,8 +64,9 @@ $$\pi_{b,i,m,k}=\frac{\exp(S_{b,i,m,k})}{\sum_{j}\exp(S_{b,i,m,j})}\quad(7)$$
 3.4 频率差异化令牌压缩
 聚合各头对高频分量的路由权重，得令牌频率显著性：
 $$P_{b,i}^{high}=\frac{1}{M}\sum_{m=1}^{M}\pi_{b,i,m,4}\quad(8)$$
-高频豁免（保留比 $\rho$）：以目标保留比的分位数作内容自适应阈值，逐样本可控可复现：
-$$\tau_b=\text{Quantile}_{1-\rho}\big(\{P_{b,i}^{high}\}_{i=1}^{N_b}\big),\quad \mathbf{M}_{b,i}=\mathbb{1}[P_{b,i}^{high}\ge\tau_b]\quad(9)$$
+高频豁免（保留比 $\rho$）：按频率显著性对令牌排序，豁免显著性最高的 $\lfloor\rho N_b\rfloor$ 个令牌——等价于以 $1-\rho$ 分位数 $\tau_b$ 为阈值，并在并列时按显著性截断以保证压缩比严格可控、逐样本可复现：
+$$\tau_b=\text{Quantile}_{1-\rho}\big(\{P_{b,i}^{high}\}_{i=1}^{N_b}\big),\quad \mathbf{M}_{b,i}=\mathbb{1}[\,i\in\text{Top-}\lfloor\rho N_b\rfloor(P_{b,\cdot}^{high})\,]\quad(9)$$
+其中频率显著性 $P_{b,i}^{high}$ 既可取自学习到的路由器（式8），亦可在免训练设定下直接采用高频谱分量的逐令牌能量 $\lVert\hat{\mathbf{X}}_{4,b,i}\rVert_2$，后者是内容相关、确定性的频率探针。
 $\mathbf{M}_{b,i}=1$ 的令牌含密集文字/几何边缘，享完全豁免、以全分辨率直通，保留细粒度文字结构。低频背景令牌（$\mathbf{M}_{b,i}=0$）经 $\mathcal{T}_b$ 映回二维网格平面，按其网格坐标划入互不重叠的 $s\times s$ 窗口，执行网格对齐的窗口平均池化后映回序列域：
 $$\mathbf{X}_{sqz,b}^{low}=\mathcal{T}_b^{-1}\big(\text{WindowAvgPool}_{s\times s}(\mathcal{T}_b(\mathbf{X}_b^{low}))\big)\in\mathbb{R}^{N_{out,b}^{low}\times D}\quad(10)$$
 即每个非空 $s\times s$ 窗口输出一个合并令牌，取该窗口内低频成员的均值；压缩后低频令牌数 $N_{out,b}^{low}\le\lceil H_b/s\rceil\lceil W_b/s\rceil$，相对原低频长度 $N_{low,b}$ 至多压缩 $s^2$ 倍。
@@ -101,7 +102,7 @@ GlimpsePrune作为query-aware、不同阶段、为单层注入架构设计的方
 2. 通用多模态：MMBench、POPE——验证频率差异化压缩不损伤通用感知并抑制幻觉。
 
 4.4 决定性实验：匹配压缩比下的密集文本对照
-核心假设：相同视觉令牌压缩比下，频率差异化压缩在文档密集任务上优于内容同质压缩、且在通用任务上不劣。将各方法调到相同平均保留令牌数，在DocVQA/InfoVQA上比较精度差并绘制“精度-压缩比”帕累托曲线。预期：随压缩比增大，内容同质基线在密集文本上加速下滑，而CSF-Squeeze因豁免高频文字显著更平缓。（结果：待实测，表3。）
+核心假设：相同视觉令牌压缩比下，频率差异化压缩在文档密集任务上优于内容同质压缩、且在通用任务上不劣。我们设置三个共享同一骨干、仅压缩策略不同的对照臂：dense（不压缩，精度上界）、uniform（内容无关地豁免相同 $\lfloor\rho N\rfloor$ 比例的令牌，token 数与本文严格匹配）、csf（按频率显著性豁免高频令牌）。免训练设定下 csf 臂采用高频能量探针 $\lVert\hat{\mathbf{X}}_4\rVert_2$ 作为显著性，以在不训练路由器时即可检验频率差异化本身的增益；训练设定下改用学习到的路由器（式8）。三臂在 DocVQA/InfoVQA 上比较精度差并绘制“精度-压缩比”帕累托曲线。判据：在匹配 token 数下 ANLS(csf) − ANLS(uniform) > 0 且 csf 接近 dense。预期：随压缩比增大，内容同质基线在密集文本上加速下滑，而 csf 因豁免高频文字显著更平缓。（结果：待实测，表3。）
 
 4.5 效率指标
 单卡A100，分别在 batch=1（原始时延）与小batch（vLLM集成、变长无填充）下报告：可训练参数量、TTFT加速比、吞吐（tokens/s）、平均视觉令牌数。（结果：待实测，表4。）

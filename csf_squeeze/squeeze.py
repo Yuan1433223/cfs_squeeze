@@ -99,9 +99,16 @@ def build_plan(
     elif keep_ratio <= 0.0:
         keep = torch.zeros(n, dtype=torch.bool, device=device)
     else:
-        # (1 - rho) quantile threshold; ">=" keeps roughly the top-rho fraction.
-        tau = torch.quantile(p_high.float(), 1.0 - keep_ratio)
-        keep = p_high >= tau
+        # Exempt exactly the top-rho fraction by saliency. A pure quantile + ">="
+        # threshold over-keeps when saliencies tie (degenerate/uniform regions),
+        # making the compression ratio uncontrollable; selecting a fixed top-k by
+        # rank guarantees a controllable, matched token budget across arms.
+        n_keep = int(round(keep_ratio * n))
+        n_keep = max(0, min(n, n_keep))
+        keep = torch.zeros(n, dtype=torch.bool, device=device)
+        if n_keep > 0:
+            top = torch.topk(p_high.float(), n_keep).indices
+            keep[top] = True
 
     idx = torch.arange(n, device=device)
     pos = grid_positions(height, width, device=device)      # [N, 2] float

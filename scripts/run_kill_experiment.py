@@ -18,6 +18,13 @@ Gate M1 (smoke_test_gpu.py) must pass first.
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+
+# Make `import csf_squeeze` work when run as `python scripts/run_kill_experiment.py`.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 
 # ---- ANLS metric (standard for DocVQA) -------------------------------------
@@ -73,15 +80,18 @@ def main():
 
     import torch
     from modelscope import snapshot_download
-    from transformers import AutoProcessor, AutoModelForImageTextToText
+    from transformers import AutoProcessor
+    try:
+        from transformers import Qwen3VLForConditionalGeneration as ModelCls
+    except Exception:
+        from transformers import AutoModelForImageTextToText as ModelCls
 
     from csf_squeeze.integrate_qwen3vl import build_module_from_hf, patch_qwen3vl
 
     model_dir = snapshot_download(args.model)
     proc = AutoProcessor.from_pretrained(model_dir)
-    model = AutoModelForImageTextToText.from_pretrained(
-        model_dir, dtype=torch.bfloat16, device_map="cuda"
-    ).eval()
+    # Avoid device_map (needs a recent accelerate); load then move to cuda.
+    model = ModelCls.from_pretrained(model_dir, dtype=torch.bfloat16).to("cuda").eval()
 
     module = build_module_from_hf(
         model.config, keep_ratio=args.rho, downsample_stride=args.stride
@@ -98,7 +108,9 @@ def main():
         elif arm == "uniform":
             module.enabled, module.selection_mode = True, "random"
         elif arm == "csf":
-            module.enabled, module.selection_mode = True, "freq"
+            # training-free run: select by high-frequency operator energy (content-based).
+            # For the trained result, load LoRA + router weights and use "freq".
+            module.enabled, module.selection_mode = True, "energy"
         else:
             raise ValueError(arm)
 
