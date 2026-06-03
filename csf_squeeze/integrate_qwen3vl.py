@@ -237,11 +237,20 @@ def make_csf_model_forward(model, module: CSFSqueeze):  # pragma: no cover - nee
         # rope_deltas drives position advancement during decode.
         model.rope_deltas = _torch.tensor(deltas, device=new_embeds.device).unsqueeze(1)
 
-        # 5) compressed DeepStack embeds, per level, aligned to visual positions.
+        # 5) DeepStack injection embeds, per level, aligned to visual positions.
         J = len(deepstack)
-        deepstack_visual_embeds = [
-            _torch.cat([comp_deepstack[i][j] for i in range(len(grids))], dim=0) for j in range(J)
-        ]
+        if getattr(module, "deepstack_mode", "consistent") == "naive":
+            # Ablation: DeepStack-unaware compressor. Inject the first N_out original
+            # features per image (no plan applied) -> positional misalignment with the
+            # compressed base stream. Demonstrates the necessity of consistent propagation.
+            deepstack_visual_embeds = []
+            for j in range(J):
+                per_img = [ds_by_image[i][j][: comp_embeds[i].shape[0]] for i in range(len(grids))]
+                deepstack_visual_embeds.append(_torch.cat(per_img, dim=0))
+        else:
+            deepstack_visual_embeds = [
+                _torch.cat([comp_deepstack[i][j] for i in range(len(grids))], dim=0) for j in range(J)
+            ]
 
         outputs = model.language_model(
             input_ids=None, position_ids=new_pos, attention_mask=new_mask,

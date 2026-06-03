@@ -223,6 +223,28 @@ def check_controllable_budget_under_ties():
         assert plan.n_out < n, "no compression under ties"
 
 
+def check_deepstack_naive_vs_consistent():
+    """Ablation flag: 'naive' truncation misaligns injections; 'consistent' pools correctly."""
+    h, w, d, j = 6, 6, 16, 3
+    n = h * w
+    base = torch.randn(n, d)
+    injections = [torch.randn(n, d) for _ in range(j)]
+    p_high = torch.rand(n)
+    plan = build_plan(p_high, h, w, stride=2, keep_ratio=0.5)
+    n_out = plan.n_out
+
+    # consistent: same plan applied -> pooled rows are member means.
+    consistent = propagate_to_deepstack(injections, plan)
+    # naive: first n_out original rows (no plan) -> different content, wrong correspondence.
+    naive = [lvl[:n_out] for lvl in injections]
+    for c, nv in zip(consistent, naive):
+        assert c.shape == nv.shape == (n_out, d), "shape must still match base for the model to run"
+        assert not torch.allclose(c, nv), "naive must differ from consistent (else no ablation signal)"
+    # consistent exempt rows equal the original exempt rows; naive's first rows do not in general.
+    for orig, c in zip(injections, consistent):
+        assert torch.allclose(c[: plan.n_keep], orig.index_select(0, plan.keep_idx), atol=TOL)
+
+
 ALL_CHECKS = [
     check_topology_roundtrip,
     check_operators_identity_lemma,
@@ -231,6 +253,7 @@ ALL_CHECKS = [
     check_squeeze_ratio_and_exemption,
     check_position_remap,
     check_deepstack_consistency,
+    check_deepstack_naive_vs_consistent,
     check_entropy_loss,
     check_lambda_schedule,
     check_module_grad_flow,
@@ -248,6 +271,7 @@ def test_modulation_uniform():            check_modulation_uniform_is_half_ident
 def test_squeeze_ratio_and_exemption():   check_squeeze_ratio_and_exemption()
 def test_position_remap():                check_position_remap()
 def test_deepstack_consistency():         check_deepstack_consistency()
+def test_deepstack_naive_vs_consistent(): check_deepstack_naive_vs_consistent()
 def test_entropy_loss():                  check_entropy_loss()
 def test_lambda_schedule():               check_lambda_schedule()
 def test_module_grad_flow():              check_module_grad_flow()

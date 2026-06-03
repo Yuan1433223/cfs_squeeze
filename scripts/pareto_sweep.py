@@ -23,7 +23,7 @@ import csv
 import json
 import os
 
-from _docvqa_eval import load_docvqa, load_model_and_module, configure_arm, eval_arm
+from _docvqa_eval import load_benchmark, load_model_and_module, configure_arm, eval_arm
 
 # Method display styling (publication palette; colorblind-safe).
 STYLE = {
@@ -42,8 +42,8 @@ def run_sweep(args):
     rhos = [float(x) for x in args.rhos.split(",")]
     strides = [int(x) for x in args.strides.split(",")]
     model, proc, module = load_model_and_module(args.model, rhos[0], strides[0])
-    data = load_docvqa(args.subset)
-    print(f"[data] {len(data)} DocVQA samples | rhos={rhos} strides={strides}")
+    data = load_benchmark(args.benchmark, args.subset)
+    print(f"[data] {len(data)} {args.benchmark} samples | rhos={rhos} strides={strides}")
 
     rows = []
 
@@ -61,7 +61,8 @@ def run_sweep(args):
                 acc, tok = eval_arm(model, proc, module, data, arm, args.max_new_tokens)
                 rows.append(dict(arm=arm, rho=rho, stride=s, anls=acc, vis_tok=tok))
                 print(f"  {arm:<7} rho={rho:<4} s={s} : ANLS={acc:.4f}  tokens={tok:.1f}")
-    return rows, dict(subset=len(data), rhos=rhos, strides=strides, model=args.model)
+    return rows, dict(subset=len(data), rhos=rhos, strides=strides,
+                      model=args.model, benchmark=args.benchmark)
 
 
 # --------------------------------------------------------------------------- #
@@ -154,6 +155,7 @@ def plot_pareto(rows, outdir, title=None):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct")
+    p.add_argument("--benchmark", default="docvqa", choices=["docvqa", "infovqa"])
     p.add_argument("--subset", type=int, default=100)
     p.add_argument("--rhos", default="0.5,0.35,0.25,0.15")
     p.add_argument("--strides", default="2")
@@ -169,8 +171,10 @@ def main():
 
     rows, meta = run_sweep(args)
     save_results(rows, meta, args.outdir)
+    title = (f"Accuracy vs. compression on {args.benchmark.upper()} "
+             f"(Qwen3-VL-4B, n={meta['subset']})")
     try:
-        plot_pareto(rows, args.outdir)
+        plot_pareto(rows, args.outdir, title=title)
     except Exception as e:
         print(f"[plot skipped] {type(e).__name__}: {e} (data saved; re-plot with --from-csv)")
 

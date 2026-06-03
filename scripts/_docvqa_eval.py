@@ -74,20 +74,37 @@ def anls(pred: str, golds, threshold: float = 0.5) -> float:
 # --------------------------------------------------------------------------- #
 # Data + model loading (GPU/transformers required)                            #
 # --------------------------------------------------------------------------- #
-def load_docvqa(subset: int):
-    """Load a DocVQA validation subset; tries ModelScope then HF datasets."""
+def load_benchmark(name: str, subset: int):
+    """Load a dense-text VQA validation subset. Supported: docvqa, infovqa.
+
+    Tries ModelScope then HF datasets; both expose (image, question, answers).
+    Dataset ids/fields below match the lmms-lab mirrors; adjust if the box differs.
+    """
+    name = name.lower()
+    spec = {
+        "docvqa": ("lmms-lab/DocVQA", "DocVQA"),
+        "infovqa": ("lmms-lab/DocVQA", "InfographicVQA"),
+    }
+    if name not in spec:
+        raise ValueError(f"unknown benchmark {name!r}; supported: {list(spec)}")
+    repo, subset_name = spec[name]
     try:
         from modelscope.msdatasets import MsDataset
-        ds = MsDataset.load("lmms-lab/DocVQA", subset_name="DocVQA", split="validation")
+        ds = MsDataset.load(repo, subset_name=subset_name, split="validation")
     except Exception:
         from datasets import load_dataset
-        ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split="validation")
+        ds = load_dataset(repo, subset_name, split="validation")
     items = []
     for i, r in enumerate(ds):
         if i >= subset:
             break
         items.append({"image": r["image"], "question": r["question"], "answers": r.get("answers", [])})
     return items
+
+
+def load_docvqa(subset: int):
+    """Backward-compatible alias for the DocVQA subset."""
+    return load_benchmark("docvqa", subset)
 
 
 def load_model_and_module(model_name: str, keep_ratio: float, stride: int):
@@ -112,11 +129,20 @@ def load_model_and_module(model_name: str, keep_ratio: float, stride: int):
 
 
 def configure_arm(module, arm: str, keep_ratio=None, stride=None):
-    """Set the module's compression policy for one experiment arm."""
+    """Set the module's compression policy for one experiment arm.
+
+    Arms:
+        dense        no compression (upper bound)
+        uniform      content-homogeneous exemption (same rho fraction, random)
+        csf          frequency-differentiated, DeepStack-consistent (ours)
+        csf-naive    frequency-differentiated but DeepStack-UNAWARE (ablation,
+                     Sec. 4.6-2): isolates the value of consistent propagation.
+    """
     if keep_ratio is not None:
         module.config.keep_ratio = keep_ratio
     if stride is not None:
         module.config.downsample_stride = stride
+    module.deepstack_mode = "consistent"     # default unless the arm overrides
     if arm == "dense":
         module.enabled = False
     elif arm == "uniform":
@@ -124,6 +150,9 @@ def configure_arm(module, arm: str, keep_ratio=None, stride=None):
     elif arm == "csf":
         # training-free probe; use "freq" with trained LoRA + router weights instead.
         module.enabled, module.selection_mode = True, "energy"
+    elif arm == "csf-naive":
+        module.enabled, module.selection_mode = True, "energy"
+        module.deepstack_mode = "naive"
     else:
         raise ValueError(f"unknown arm: {arm}")
 

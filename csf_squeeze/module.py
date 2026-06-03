@@ -53,6 +53,12 @@ class CSFSqueeze(nn.Module):
         #   enabled: when False the patched forward bypasses compression (dense arm).
         self.selection_mode = "freq"
         self.enabled = True
+        # DeepStack handling (Sec. 3.5):
+        #   "consistent" (default) -> apply the SAME plan to every injection level.
+        #   "naive"                -> DeepStack-unaware: inject the first N_out original
+        #                             features (positional misalignment) -> ablation that
+        #                             shows the necessity of consistent propagation.
+        self.deepstack_mode = "consistent"
         self.last_n_in = 0      # token counts of the most recent forward (for logging)
         self.last_n_out = 0
 
