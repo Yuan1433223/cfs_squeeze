@@ -43,6 +43,21 @@ class CSFSqueeze(nn.Module):
             config.hidden_size, config.num_heads, config.num_bases
         )
         self.high_index = config.num_bases - 1   # last basis is the high-frequency one
+        # Experiment controls (do not affect the default frequency-aware path):
+        #   selection_mode: "freq" (default) | "random" -> the content-homogeneous
+        #     control arm exempts the SAME rho fraction but chosen content-agnostically,
+        #     giving matched token counts to isolate frequency-awareness (Sec. 4.6).
+        #   enabled: when False the patched forward bypasses compression (dense arm).
+        self.selection_mode = "freq"
+        self.enabled = True
+        self.last_n_in = 0      # token counts of the most recent forward (for logging)
+        self.last_n_out = 0
+
+    def _saliency(self, pi: torch.Tensor, n: int, device, dtype) -> torch.Tensor:
+        if self.selection_mode == "random":
+            g = torch.Generator(device="cpu").manual_seed(n)  # deterministic per resolution
+            return torch.rand(n, generator=g).to(device=device, dtype=dtype)
+        return high_freq_saliency(pi, self.high_index)        # "freq"
 
     def forward(
         self,
@@ -60,10 +75,11 @@ class CSFSqueeze(nn.Module):
         operators = compute_operators(feat, height, width, cfg.low_freq_kernel)  # [K, N, D]
         pi = self.router(feat)                                                   # [N, M, K]
         modulated = modulate(operators, pi, cfg.num_heads)                       # [N, D]
-        p_high = high_freq_saliency(pi, self.high_index)                         # [N]
+        p_high = self._saliency(pi, feat.shape[0], feat.device, feat.dtype)      # [N]
 
         plan = build_plan(p_high, height, width, s, rho)
         compressed = plan.apply(modulated)
+        self.last_n_in, self.last_n_out = plan.n_in, plan.n_out
 
         return CSFOutput(
             compressed=compressed,

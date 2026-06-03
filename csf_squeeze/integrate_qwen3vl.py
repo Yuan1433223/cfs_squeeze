@@ -170,70 +170,87 @@ def _compress_row(
 
 
 def make_csf_model_forward(model, module: CSFSqueeze):  # pragma: no cover - needs real model
-    """Return a CSF-aware replacement for Qwen3VLModel.forward (images only)."""
+    """Return a CSF-aware replacement for Qwen3VLModel.forward (images only).
+
+    ``model`` here is the inner Qwen3VLModel. Decode steps (no pixel_values) and
+    text-only batches fall through to the original forward unchanged.
+    """
     import torch as _torch
 
-    cfg = model.config
-    image_token_id = cfg.image_token_id
-    merge = model.visual.spatial_merge_size
+    orig_forward = model.forward
+    image_token_id = model.config.image_token_id
+    try:
+        from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModelOutputWithPast
+    except Exception:  # version drift: fall back to a plain namespace-like return
+        Qwen3VLModelOutputWithPast = None
 
     def csf_forward(
         input_ids=None, attention_mask=None, position_ids=None, past_key_values=None,
         inputs_embeds=None, pixel_values=None, image_grid_thw=None, **kwargs,
     ):
+        # Decode steps / text-only, or compression disabled (dense arm): original behaviour.
+        if pixel_values is None or not getattr(module, "enabled", True):
+            return orig_forward(
+                input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids,
+                past_key_values=past_key_values, inputs_embeds=inputs_embeds,
+                pixel_values=pixel_values, image_grid_thw=image_grid_thw, **kwargs,
+            )
+
         if inputs_embeds is None:
             inputs_embeds = model.get_input_embeddings()(input_ids)
 
-        # 1) produce uncompressed visual features (real API).
-        image_outputs = model.get_image_features(pixel_values, image_grid_thw, return_dict=True, **kwargs)
+        # 1) uncompressed visual features (real API).
+        image_outputs = model.get_image_features(pixel_values, image_grid_thw, return_dict=True)
         per_image_embeds = list(image_outputs.pooler_output)          # list of [N_i, D]
         deepstack = image_outputs.deepstack_features                   # list_J of [sum N_i, D]
 
         # 2) per-image compression + DeepStack-consistent propagation.
         grids = grids_from_image_grid_thw(image_grid_thw)             # post-merge (H_i, W_i)
-        # slice the concatenated deepstack levels back to per-image chunks.
         split = [g[0] * g[1] for g in grids]
-        ds_per_image = [list(torch.split(level, split, dim=0)) for level in deepstack]
+        ds_per_image = [list(_torch.split(level, split, dim=0)) for level in deepstack]
         ds_by_image = [[ds_per_image[j][i] for j in range(len(deepstack))] for i in range(len(grids))]
         stream = compress_visual_stream(per_image_embeds, grids, module, ds_by_image)
-
-        comp_embeds = stream["base"]                                   # per image [N_out_i, D]
-        comp_positions = stream["positions"]
-        comp_deepstack = stream["deepstack"]                           # per image, list_J [N_out_i, D]
+        comp_embeds, comp_positions, comp_deepstack = stream["base"], stream["positions"], stream["deepstack"]
 
         # 3) rebuild each row: shrink placeholder spans, build M-RoPE positions.
         rows_embeds, rows_pos, rows_vmask = [], [], []
         for b in range(input_ids.shape[0]):
-            # (single-image-per-row assumed here; generalize by tracking img order)
-            per_image = list(zip(comp_embeds, comp_positions))
+            per_image = list(zip(comp_embeds, comp_positions))        # single-image-per-row assumption
             e, p, vm = _compress_row(input_ids[b], inputs_embeds[b], per_image, image_token_id)
             rows_embeds.append(e); rows_pos.append(p); rows_vmask.append(vm)
 
-        # 4) right-pad the ragged rows back into a batch.
+        # 4) right-pad ragged rows back into a batch.
         Lmax = max(e.shape[0] for e in rows_embeds)
-        D = inputs_embeds.shape[-1]
-        new_embeds = inputs_embeds.new_zeros(len(rows_embeds), Lmax, D)
-        new_mask = inputs_embeds.new_zeros(len(rows_embeds), Lmax, dtype=_torch.long)
-        new_pos = inputs_embeds.new_zeros(3, len(rows_embeds), Lmax, dtype=_torch.long)
-        new_vmask = inputs_embeds.new_zeros(len(rows_embeds), Lmax, dtype=_torch.bool)
+        Bsz, D = len(rows_embeds), inputs_embeds.shape[-1]
+        new_embeds = inputs_embeds.new_zeros(Bsz, Lmax, D)
+        new_mask = inputs_embeds.new_zeros(Bsz, Lmax, dtype=_torch.long)
+        new_pos = inputs_embeds.new_zeros(3, Bsz, Lmax, dtype=_torch.long)
+        new_vmask = inputs_embeds.new_zeros(Bsz, Lmax, dtype=_torch.bool)
+        deltas = []
         for b, (e, p, vm) in enumerate(zip(rows_embeds, rows_pos, rows_vmask)):
             l = e.shape[0]
             new_embeds[b, :l] = e
             new_mask[b, :l] = 1
             new_pos[:, b, :l] = p.round().long()
             new_vmask[b, :l] = vm
+            deltas.append(int(p.max().item()) + 1 - l)
+        # rope_deltas drives position advancement during decode.
+        model.rope_deltas = _torch.tensor(deltas, device=new_embeds.device).unsqueeze(1)
 
-        # 5) compressed DeepStack embeds aligned to the visual positions, per level.
+        # 5) compressed DeepStack embeds, per level, aligned to visual positions.
         J = len(deepstack)
         deepstack_visual_embeds = [
             _torch.cat([comp_deepstack[i][j] for i in range(len(grids))], dim=0) for j in range(J)
         ]
 
-        return model.language_model(
+        outputs = model.language_model(
             input_ids=None, position_ids=new_pos, attention_mask=new_mask,
             past_key_values=past_key_values, inputs_embeds=new_embeds,
             visual_pos_masks=new_vmask, deepstack_visual_embeds=deepstack_visual_embeds, **kwargs,
         )
+        if Qwen3VLModelOutputWithPast is not None:
+            return Qwen3VLModelOutputWithPast(**outputs, rope_deltas=model.rope_deltas)
+        return outputs
 
     return csf_forward
 
@@ -241,12 +258,13 @@ def make_csf_model_forward(model, module: CSFSqueeze):  # pragma: no cover - nee
 def patch_qwen3vl(model, module: CSFSqueeze):  # pragma: no cover - needs real model
     """Install CSF-Squeeze into a live Qwen3-VL model (images, GPU-validated path).
 
-    Replaces ``model.model.forward`` with a CSF-aware version. The frequency
-    routing weights (``module.router``) and any LoRA on the projector are the only
-    trainable additions; DeepStack injections are compressed by the same per-image
-    plan to preserve multi-level alignment (Sec. 3.5).
+    Replaces the inner ``Qwen3VLModel.forward``. Only ``module.router`` (and any
+    LoRA on the projector) are trainable; DeepStack injections are compressed by
+    the same per-image plan to preserve multi-level alignment (Sec. 3.5).
+
+    M1 validation gate: smoke-test on one image against the *installed*
+    transformers version before running experiments (private signatures drift).
     """
     inner = model.model if hasattr(model, "model") else model
-    import types
-    inner.forward = types.MethodType(lambda self, *a, **k: make_csf_model_forward(self, module)(*a, **k), inner)
+    inner.forward = make_csf_model_forward(inner, module)
     return model
