@@ -281,9 +281,26 @@ def main():
         batch = {k: v.to("cuda") for k, v in batch.items()}
         if verbose: print(f"[dbg s{step}] -> cuda; calling forward..."); sys.stdout.flush()
 
+        # CSF compression shrinks the visual span -> the outer HF loss path would
+        # fail to align (logits L' < labels L). Pop labels and compute CE ourselves
+        # on the answer span, which sits at the tail of the sequence and survives
+        # compression unchanged (text-only, no image tokens).
+        labels_full = batch.pop("labels")
         out = model(**batch)
-        if verbose: print(f"[dbg s{step}] forward done, loss={float(out.loss):.4f}; backward..."); sys.stdout.flush()
-        loss_ce = out.loss
+        logits = out.logits                                  # [1, L', V]
+        L_new = logits.shape[1]
+        import torch.nn.functional as F
+        new_labels = torch.full((labels_full.shape[0], L_new), -100,
+                                dtype=labels_full.dtype, device=logits.device)
+        new_labels[:, -ans_len:] = labels_full[:, -ans_len:].to(logits.device)
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = new_labels[:, 1:].contiguous()
+        loss_ce = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)).float(),
+            shift_labels.view(-1),
+            ignore_index=-100,
+        )
+        if verbose: print(f"[dbg s{step}] forward done, loss={float(loss_ce):.4f}; backward..."); sys.stdout.flush()
         # collect entropy across the latest forward via the patched module's stash:
         # we reuse module.entropy_running set in patch_qwen3vl when available.
         ent = getattr(module, "_last_entropy_loss", None)
