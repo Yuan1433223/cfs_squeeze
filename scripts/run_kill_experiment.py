@@ -25,7 +25,8 @@ from _docvqa_eval import load_benchmark, load_model_and_module, configure_arm, e
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct")
-    p.add_argument("--benchmark", default="docvqa", choices=["docvqa", "infovqa"])
+    p.add_argument("--benchmark", default="docvqa",
+                   choices=["docvqa", "infovqa", "mmbench", "pope"])
     p.add_argument("--subset", type=int, default=200)
     p.add_argument("--rho", type=float, default=0.25)
     p.add_argument("--stride", type=int, default=2)

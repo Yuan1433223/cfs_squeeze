@@ -56,7 +56,7 @@ def _load_csv(path):
             for k, v in r.items():
                 if v in ("", "None", None):
                     row[k] = None
-                elif k in ("rho", "anls", "vis_tok", "ttft_ms", "throughput_tps"):
+                elif k in ("rho", "anls", "vis_tok", "ttft_ms", "throughput_tps", "score"):
                     row[k] = float(v)
                 elif k == "stride":
                     row[k] = int(v)
@@ -116,7 +116,8 @@ def block_general(model, proc, module, benchmark, subset, rho, stride, mnt):
         configure_arm(module, arm, keep_ratio=rho, stride=stride)
         acc, tok = eval_arm(model, proc, module, data, arm, mnt)
         rows.append(dict(arm=arm, rho=rho if arm != "dense" else None,
-                         stride=stride if arm != "dense" else None, anls=acc, vis_tok=tok))
+                         stride=stride if arm != "dense" else None,
+                         score=acc, vis_tok=tok))
         print(f"  {arm:<6} {benchmark:<8} : acc={acc:.4f} tok={tok:.1f}")
     return rows, dict(benchmark=benchmark, subset=len(data), rho=rho, stride=stride)
 
@@ -146,11 +147,22 @@ def block_efficiency(model, proc, module, subset, rho, stride, gen_tokens):
     return rows, dict(subset=len(data), gen_tokens=gen_tokens, rho=rho, stride=stride)
 
 
+def _score(r):
+    """Extract the accuracy/score number regardless of column name (anls/score)."""
+    if "anls" in r and r.get("anls") is not None:
+        return r["anls"]
+    if "score" in r and r.get("score") is not None:
+        return r["score"]
+    return None
+
+
 def _gap(rows, a, b):
     da = next((r for r in rows if r["arm"] == a), None)
     db = next((r for r in rows if r["arm"] == b), None)
     if da and db:
-        return da["anls"] - db["anls"]
+        sa, sb = _score(da), _score(db)
+        if sa is not None and sb is not None:
+            return sa - sb
     return None
 
 
@@ -169,8 +181,9 @@ def summarize(blocks):
                 print(f"  {r['arm']:<10} {cfg:<14} TTFT={r['ttft_ms']:.1f}ms  "
                       f"tps={r['throughput_tps']:.2f}  tok={r['vis_tok']:.1f}")
             else:
-                key = "anls" if "anls" in r else "score"
-                print(f"  {r['arm']:<10} {cfg:<14} {key}={r.get(key, r.get('anls', 0)):.4f}  "
+                s = _score(r)
+                key = "anls" if "anls" in r and r.get("anls") is not None else "acc"
+                print(f"  {r['arm']:<10} {cfg:<14} {key}={s if s is not None else 0:.4f}  "
                       f"tok={r.get('vis_tok', 0):.1f}")
         # headline gaps (only meaningful for accuracy blocks).
         for a, b, label in [("csf", "uniform", "freq-differentiation"),

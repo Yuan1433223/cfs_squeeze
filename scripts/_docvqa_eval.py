@@ -244,43 +244,57 @@ def _load_docvqa_family(name: str, subset: int):
 
 
 def _load_mmbench(subset: int):
-    """MMBench (dev): multi-choice. Direct ModelScope file download (no datasets/HF)."""
+    """MMBench (dev): multi-choice. Direct ModelScope file download (no datasets/HF).
+
+    The ``/repo/files`` listing endpoint is unreliable across mirrors (we've seen
+    405 Method Not Allowed), so we bypass listing and try a small set of known
+    file paths against several mirrors. The first that resolves (HTTP 200 + a
+    readable parquet/tsv) wins.
+    """
     import pandas as pd
-    repos = ["AI-ModelScope/MMBench_DEV_EN", "AI-ModelScope/MMBench", "modelscope/MMBench"]
+    candidates = [
+        # (repo, file_path) -- ordered by likelihood:
+        ("AI-ModelScope/MMBench", "MMBench_DEV_EN/dev-00000-of-00001.parquet"),
+        ("AI-ModelScope/MMBench", "dev/dev-00000-of-00001.parquet"),
+        ("AI-ModelScope/MMBench", "MMBench_DEV_EN/test-00000-of-00001.parquet"),
+        ("AI-ModelScope/MMBench", "mmbench_dev_en_20231003.tsv"),
+        ("AI-ModelScope/MMBench_DEV_EN", "dev-00000-of-00001.parquet"),
+        ("AI-ModelScope/MMBench_DEV_EN", "test-00000-of-00001.parquet"),
+        ("modelscope/MMBench", "MMBench_DEV_EN/dev-00000-of-00001.parquet"),
+        ("modelscope/MMBench", "mmbench_dev_en_20231003.tsv"),
+    ]
     last_err = None
-    for repo in repos:
+    for repo, fp in candidates:
         try:
-            files = _ms_list_files(repo)
+            local = _ms_download_file(repo, fp)
         except Exception as e:
             last_err = e
             continue
-        # Prefer parquet files mentioning 'dev' or 'EN'.
-        ranked = sorted(
-            (f for f in files if f and (f.endswith(".parquet") or f.endswith(".tsv"))),
-            key=lambda f: (("dev" not in f.lower()), ("en" not in f.lower()), f),
-        )
-        for fp in ranked:
-            try:
-                local = _ms_download_file(repo, fp)
-                df = pd.read_parquet(local) if local.endswith(".parquet") else \
-                     pd.read_csv(local, sep="\t")
-                items = []
-                for _, r in df.iterrows():
-                    if len(items) >= subset:
-                        break
-                    opts = {k: r[k] for k in ("A", "B", "C", "D")
-                            if k in df.columns and pd.notna(r[k])}
-                    items.append(dict(task="mc",
-                                      image=_decode_image(r["image"] if "image" in df.columns else r.get("image_path")),
-                                      question=str(r["question"]),
-                                      options=opts,
-                                      answer=str(r.get("answer", "")).strip().upper()))
-                if items:
-                    return items
-            except Exception as e:
-                last_err = e
-                continue
-    raise RuntimeError(f"MMBench: no candidate worked. Last error: {last_err!r}")
+        try:
+            df = pd.read_parquet(local) if local.endswith(".parquet") else \
+                 pd.read_csv(local, sep="\t")
+        except Exception as e:
+            last_err = e
+            continue
+        items = []
+        img_col = "image" if "image" in df.columns else (
+            "image_path" if "image_path" in df.columns else None)
+        if img_col is None:
+            last_err = RuntimeError(f"no image column in {fp}; cols={list(df.columns)[:8]}")
+            continue
+        for _, r in df.iterrows():
+            if len(items) >= subset:
+                break
+            opts = {k: r[k] for k in ("A", "B", "C", "D")
+                    if k in df.columns and pd.notna(r[k])}
+            items.append(dict(task="mc",
+                              image=_decode_image(r[img_col]),
+                              question=str(r["question"]),
+                              options=opts,
+                              answer=str(r.get("answer", "")).strip().upper()))
+        if items:
+            return items
+    raise RuntimeError(f"MMBench: no candidate file worked. Last error: {last_err!r}")
 
 
 def _load_pope(subset: int):
