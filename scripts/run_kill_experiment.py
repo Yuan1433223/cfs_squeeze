@@ -34,9 +34,11 @@ def main():
                    help="comma list of: dense,uniform,csf,csf-naive")
     p.add_argument("--max_new_tokens", type=int, default=32)
     p.add_argument("--debug", type=int, default=0, help="print this many (q, gold, pred, anls) samples")
+    p.add_argument("--ckpt", default=None,
+                   help="trained checkpoint dir (LoRA + csf_router.pt) -> learned router for csf arm")
     args = p.parse_args()
 
-    model, proc, module = load_model_and_module(args.model, args.rho, args.stride)
+    model, proc, module = load_model_and_module(args.model, args.rho, args.stride, ckpt=args.ckpt)
     data = load_benchmark(args.benchmark, args.subset)
     print(f"[data] {len(data)} {args.benchmark} samples | rho={args.rho} stride={args.stride}")
 

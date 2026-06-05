@@ -39,9 +39,11 @@ def main():
                    help="decode-throughput window after the first token")
     p.add_argument("--warmup", type=int, default=2)
     p.add_argument("--outdir", default="results")
+    p.add_argument("--ckpt", default=None,
+                   help="trained checkpoint dir (LoRA + csf_router.pt) -> learned router for csf arm")
     args = p.parse_args()
 
-    model, proc, module = load_model_and_module(args.model, args.rho, args.stride)
+    model, proc, module = load_model_and_module(args.model, args.rho, args.stride, ckpt=args.ckpt)
     data = load_benchmark(args.benchmark, args.subset)
     print(f"[data] {len(data)} {args.benchmark} samples | warmup={args.warmup} gen_tokens={args.gen_tokens}")
 

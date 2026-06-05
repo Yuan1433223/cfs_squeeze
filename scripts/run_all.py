@@ -227,6 +227,9 @@ def main():
     p.add_argument("--outdir", default="results")
     p.add_argument("--quick", action="store_true", help="tiny subsets to smoke the full pipeline")
     p.add_argument("--from-dir", default=None, help="skip GPU runs; summarize/plot saved CSVs in this dir")
+    p.add_argument("--ckpt", default=None,
+                   help="path to a trained checkpoint dir (LoRA adapter + csf_router.pt) "
+                        "from scripts/train_csf.py; switches the csf arm to the learned router")
     args = p.parse_args()
 
     rhos = [float(x) for x in args.rhos.split(",")]
@@ -254,7 +257,7 @@ def main():
     e_sub = 4 if args.quick else args.efficiency_subset
     mnt = args.max_new_tokens
 
-    model, proc, module = load_model_and_module(args.model, rhos[0], strides[0])
+    model, proc, module = load_model_and_module(args.model, rhos[0], strides[0], ckpt=args.ckpt)
     blocks = {}
 
     # Top-level block progress: lets the user see overall ETA across blocks.

@@ -392,8 +392,16 @@ def load_train_subset(name: str, subset: int):
     raise RuntimeError(f"load_train_subset({name}): no candidate worked. Last error: {last_err!r}")
 
 
-def load_model_and_module(model_name: str, keep_ratio: float, stride: int):
-    """Load Qwen3-VL + a patched CSF-Squeeze module. Returns (model, proc, module)."""
+def load_model_and_module(model_name: str, keep_ratio: float, stride: int, ckpt: str = None):
+    """Load Qwen3-VL + a patched CSF-Squeeze module. Returns (model, proc, module).
+
+    If ``ckpt`` is provided, it must point at a directory written by
+    ``scripts/train_csf.py`` (containing ``adapter_*`` files + ``csf_router.pt``).
+    The LoRA adapter is loaded onto the base model and the trained router
+    weights are loaded into the CSF module; the module is also tagged so
+    :func:`configure_arm` will route the ``csf`` arm through ``selection_mode='freq'``
+    (learned router) instead of the ``'energy'`` training-free probe.
+    """
     import torch
     from modelscope import snapshot_download
     from transformers import AutoProcessor
@@ -406,10 +414,30 @@ def load_model_and_module(model_name: str, keep_ratio: float, stride: int):
     model_dir = snapshot_download(model_name)
     proc = AutoProcessor.from_pretrained(model_dir)
     model = ModelCls.from_pretrained(model_dir, dtype=torch.bfloat16).to("cuda").eval()
+
+    # Wrap with LoRA BEFORE patching, mirroring train_csf.py so the patched
+    # forward sees the same inner module structure (`model.base_model.model`).
+    if ckpt is not None:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, ckpt).eval()
+        print(f"[ckpt] LoRA adapter loaded from {ckpt}")
+
     module = build_module_from_hf(
-        model.config, keep_ratio=keep_ratio, downsample_stride=stride
+        model.config if not hasattr(model, "base_model") else model.base_model.model.config,
+        keep_ratio=keep_ratio, downsample_stride=stride,
     ).to("cuda", dtype=torch.bfloat16)
-    patch_qwen3vl(model, module)
+    inner_host = model.base_model.model if hasattr(model, "base_model") else model
+    patch_qwen3vl(inner_host, module)
+
+    if ckpt is not None:
+        router_path = os.path.join(ckpt, "csf_router.pt")
+        if not os.path.exists(router_path):
+            raise FileNotFoundError(f"router weights missing: {router_path}")
+        sd = torch.load(router_path, map_location="cuda")
+        module.load_state_dict(sd)
+        module._trained = True                  # configure_arm() flips csf -> 'freq'
+        print(f"[ckpt] router weights loaded ({sum(v.numel() for v in sd.values())/1e6:.2f}M params)")
+
     return model, proc, module
 
 
@@ -433,10 +461,13 @@ def configure_arm(module, arm: str, keep_ratio=None, stride=None):
     elif arm == "uniform":
         module.enabled, module.selection_mode = True, "random"
     elif arm == "csf":
-        # training-free probe; use "freq" with trained LoRA + router weights instead.
-        module.enabled, module.selection_mode = True, "energy"
+        # training-free probe by default; if a trained router was loaded
+        # (load_model_and_module(ckpt=...)), use the learned head-wise router instead.
+        module.enabled = True
+        module.selection_mode = "freq" if getattr(module, "_trained", False) else "energy"
     elif arm == "csf-naive":
-        module.enabled, module.selection_mode = True, "energy"
+        module.enabled = True
+        module.selection_mode = "freq" if getattr(module, "_trained", False) else "energy"
         module.deepstack_mode = "naive"
     else:
         raise ValueError(f"unknown arm: {arm}")

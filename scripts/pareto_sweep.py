@@ -41,7 +41,7 @@ STYLE = {
 def run_sweep(args):
     rhos = [float(x) for x in args.rhos.split(",")]
     strides = [int(x) for x in args.strides.split(",")]
-    model, proc, module = load_model_and_module(args.model, rhos[0], strides[0])
+    model, proc, module = load_model_and_module(args.model, rhos[0], strides[0], ckpt=args.ckpt)
     data = load_benchmark(args.benchmark, args.subset)
     print(f"[data] {len(data)} {args.benchmark} samples | rhos={rhos} strides={strides}")
 
@@ -162,6 +162,8 @@ def main():
     p.add_argument("--max_new_tokens", type=int, default=32)
     p.add_argument("--outdir", default="results")
     p.add_argument("--from-csv", default=None, help="skip the sweep; re-plot from a saved CSV")
+    p.add_argument("--ckpt", default=None,
+                   help="trained checkpoint dir (LoRA + csf_router.pt) -> learned router for csf arm")
     args = p.parse_args()
 
     if args.from_csv:
