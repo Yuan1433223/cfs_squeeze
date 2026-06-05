@@ -328,6 +328,18 @@ def load_docvqa(subset: int):
     return load_benchmark("docvqa", subset)
 
 
+def _coerce_answers(field):
+    """parquet 'answers' is sometimes np.ndarray, sometimes list, sometimes None."""
+    import numpy as np
+    if field is None:
+        return []
+    if isinstance(field, np.ndarray):
+        return [str(x) for x in field.tolist()]
+    if isinstance(field, (list, tuple)):
+        return [str(x) for x in field]
+    return [str(field)]
+
+
 def load_train_subset(name: str, subset: int):
     """Lightweight train-data loader.
 
@@ -374,7 +386,7 @@ def load_train_subset(name: str, subset: int):
                 items.append(dict(task="anls",
                                   image=_decode_image(r["image"]),
                                   question=str(r["question"]),
-                                  answers=list(r.get("answers", []) or [])))
+                                  answers=_coerce_answers(r.get("answers"))))
         if items:
             return items
     raise RuntimeError(f"load_train_subset({name}): no candidate worked. Last error: {last_err!r}")
