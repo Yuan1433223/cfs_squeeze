@@ -253,21 +253,13 @@ def _load_mmbench(subset: int):
     """
     import pandas as pd
     candidates = [
-        # (repo, file_path) -- ordered by likelihood. lmms-lab/MMBench is the
-        # confirmed live mirror; we try its most likely dev-split file paths first.
-        ("lmms-lab/MMBench", "MMBench_DEV_EN/dev-00000-of-00001.parquet"),
-        ("lmms-lab/MMBench", "MMBench_DEV_EN/test-00000-of-00001.parquet"),
-        ("lmms-lab/MMBench", "dev/dev-00000-of-00001.parquet"),
-        ("lmms-lab/MMBench", "data/MMBench_DEV_EN-00000-of-00001.parquet"),
-        ("lmms-lab/MMBench", "MMBench_DEV_EN-00000-of-00001.parquet"),
+        # (repo, file_path) -- confirmed via probe_mmbench.py against the live mirror.
+        # Tree under lmms-lab/MMBench: en/, cn/, cc/ each with dev/test parquet.
+        ("lmms-lab/MMBench", "en/dev-00000-of-00001.parquet"),
+        ("lmms-lab/MMBench", "en/test-00000-of-00001.parquet"),
+        # historical fallbacks (kept in case the mirror layout changes):
         ("AI-ModelScope/MMBench", "MMBench_DEV_EN/dev-00000-of-00001.parquet"),
-        ("AI-ModelScope/MMBench", "dev/dev-00000-of-00001.parquet"),
-        ("AI-ModelScope/MMBench", "MMBench_DEV_EN/test-00000-of-00001.parquet"),
-        ("AI-ModelScope/MMBench", "mmbench_dev_en_20231003.tsv"),
-        ("AI-ModelScope/MMBench_DEV_EN", "dev-00000-of-00001.parquet"),
-        ("AI-ModelScope/MMBench_DEV_EN", "test-00000-of-00001.parquet"),
-        ("modelscope/MMBench", "MMBench_DEV_EN/dev-00000-of-00001.parquet"),
-        ("modelscope/MMBench", "mmbench_dev_en_20231003.tsv"),
+        ("AI-ModelScope/MMBench", "en/dev-00000-of-00001.parquet"),
     ]
     last_err = None
     for repo, fp in candidates:
