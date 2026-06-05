@@ -211,6 +211,8 @@ def make_csf_model_forward(model, module: CSFSqueeze):  # pragma: no cover - nee
         ds_by_image = [[ds_per_image[j][i] for j in range(len(deepstack))] for i in range(len(grids))]
         stream = compress_visual_stream(per_image_embeds, grids, module, ds_by_image)
         comp_embeds, comp_positions, comp_deepstack = stream["base"], stream["positions"], stream["deepstack"]
+        # Stash the per-batch entropy loss so the trainer can add it to the CE loss.
+        module._last_entropy_loss = stream["entropy_loss"]
 
         # 3) rebuild each row: shrink placeholder spans, build M-RoPE positions.
         rows_embeds, rows_pos, rows_vmask = [], [], []
