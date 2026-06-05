@@ -441,6 +441,16 @@ def load_model_and_module(model_name: str, keep_ratio: float, stride: int, ckpt:
     return model, proc, module
 
 
+def _inner_host(model):
+    """Return the Qwen3VL inner module (where ``.model.visual`` lives).
+
+    With LoRA: ``model`` is a ``PeftModel``; ``PeftModel.base_model.model`` is the
+    inner ``Qwen3VLForConditionalGeneration``. Without LoRA the base model itself
+    already exposes ``.model.visual``.
+    """
+    return model.base_model.model if hasattr(model, "base_model") else model
+
+
 def configure_arm(module, arm: str, keep_ratio=None, stride=None):
     """Set the module's compression policy for one experiment arm.
 
@@ -483,7 +493,7 @@ def eval_arm(model, proc, module, data, arm, max_new_tokens=32, debug=0):
     """
     import torch
 
-    merge = model.model.visual.spatial_merge_size
+    merge = _inner_host(model).model.visual.spatial_merge_size
     scores, tok_counts = [], []
     running_score = 0.0
     pbar = _progress(range(len(data)), total=len(data), desc=f"eval/{arm}")
@@ -560,7 +570,7 @@ def time_arm(model, proc, module, data, arm, gen_tokens=64, warmup=2):
     import time
     import torch
 
-    merge = model.model.visual.spatial_merge_size
+    merge = _inner_host(model).model.visual.spatial_merge_size
     ttft, decode_tps, vis_toks = [], [], []
     pbar = _progress(range(len(data)), total=len(data), desc=f"time/{arm}")
     with torch.no_grad():
