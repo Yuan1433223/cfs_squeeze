@@ -471,13 +471,19 @@ def configure_arm(module, arm: str, keep_ratio=None, stride=None):
     elif arm == "uniform":
         module.enabled, module.selection_mode = True, "random"
     elif arm == "csf":
-        # training-free probe by default; if a trained router was loaded
-        # (load_model_and_module(ckpt=...)), use the learned head-wise router instead.
+        # Default to the deterministic high-frequency energy probe ||X_hat_4||.
+        # The learned head-wise router is only used when CSF_ROUTER_MODE=freq is
+        # explicitly set in the environment (escape hatch for ablations); the
+        # main paper reports the training-free energy probe with a LoRA-adapted
+        # backbone, since the entropy-regularised router we trained does not
+        # reliably outperform the probe on 4B (see §4.9).
         module.enabled = True
-        module.selection_mode = "freq" if getattr(module, "_trained", False) else "energy"
+        _router_mode = os.environ.get("CSF_ROUTER_MODE", "energy").lower()
+        module.selection_mode = "freq" if _router_mode == "freq" else "energy"
     elif arm == "csf-naive":
         module.enabled = True
-        module.selection_mode = "freq" if getattr(module, "_trained", False) else "energy"
+        _router_mode = os.environ.get("CSF_ROUTER_MODE", "energy").lower()
+        module.selection_mode = "freq" if _router_mode == "freq" else "energy"
         module.deepstack_mode = "naive"
     else:
         raise ValueError(f"unknown arm: {arm}")

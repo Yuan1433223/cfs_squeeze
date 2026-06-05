@@ -1,0 +1,49 @@
+[1] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. In Advances in Neural Information Processing Systems (NeurIPS), 2023.
+
+[2] Bai, J., Bai, S., Yang, S., Wang, S., Tan, S., Wang, P., Lin, J., Chang, Zhou., and Zhou, J. Qwen-vl: A versatile vision-language model. arXiv preprint arXiv:2308.12966, 2023.
+
+[3] Wang, P., Bai, S., Tan, S., Wang, S., Fan, Y., Bai, J., Chen, K., Lin, J., and Zhou, J. Qwen2-vl: Enhancing vision-language model's perception of the world at any resolution. arXiv preprint arXiv:2410.05243, 2024.
+
+[4] Qwen Team. Qwen2.5-vl technical report. Technical report, Alibaba Group, 2025.
+
+[5] Qwen Team. Qwen3-vl technical report. arXiv preprint arXiv:2511.21631, 2025. 
+
+[6] Adept AI. Fuyu-8b: A multimodal architecture for ai agents. Technical blog, Adept AI Labs, 2023.
+
+[7] Lingchen Meng, Jianwei Yang, Rui Tian, Xiyang Dai, Zuxuan Wu, et al. DeepStack: Deeply stacking visual tokens is surprisingly simple and effective for LMMs. arXiv preprint arXiv:2406.04334, 2024. (NeurIPS 2024)
+
+[8] Bolya, D., Fu, C.-Y., Dai, X., Zhang, P., Feichtenhofer, C., and Hoffman, J. Token merging: Your vit but faster. In International Conference on Learning Representations (ICLR), 2023.
+
+[9] Double, Z., et al. LISA: Layer-integrated state-agnostic token pruning for large language models. arXiv preprint arXiv:2405.15871, 2024.
+
+[10] Qingqing Cao, Bhargavi Paranjape, and Hannaneh Hajishirzi. PuMer: Pruning and merging tokens for efficient vision language models. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (ACL), pages 12890-12903, 2023.
+
+[11] Kim, J., and Park, E. Dynamic token consolidation for efficient vision-language models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pages 5432-5441, 2024.
+
+[12] Shang, Y., Cai, M., Xu, B., Lee, Y. J., and Yan, Y. LLaVA-PruMerge: Adaptive token reduction for efficient large multimodal models. arXiv preprint arXiv:2403.15388, 2024.
+
+[13] Zhang, M., and Tan, J. Glimpse: Automating fine-grained token pruning for mllms. arXiv preprint arXiv:2412.02123, 2024.
+
+[14] Yunpeng Chen, Haoqi Fan, Bing Xu, Zhicheng Yan, Yannis Kalantidis, et al. Drop an octave: Reducing spatial redundancy in convolutional neural networks with octave convolution. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV), pages 3434-3443, 2019.
+
+[15] Qin, Z., Zhang, P., Wu, F., and Li, X. FcaNet: Frequency channel attention networks. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV), pages 783-792, 2021.
+
+[16] Travis L. Williams and Robert Li. Wavelet pooling for convolutional neural networks. In International Conference on Learning Representations (ICLR), 2018.
+
+[17] Hu, E. J., Shen, Y., Wallis, P., Allen-Zheng, Z., Li, Y., Wang, S., Wang, L., and Chen, Weizhu. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations (ICLR), 2022.
+
+[18] Jia, M., Tang, L., Chen, B.-C., Cardie, C., Belongie, S., Hariharan, B., and Lim, S.-N. Visual prompt tuning. In European Conference on Computer Vision (ECCV), pages 709-727, 2022.
+
+[19] Hoai-Chau Tran, Duy M. H. Nguyen, Duy M. Nguyen, TrungTin Nguyen, Ngan Le, et al. Accelerating transformers with spectrum-preserving token merging. In Advances in Neural Information Processing Systems (NeurIPS), 2024.
+
+[20] Su, J., Ahmed, M., Lu, Y., Pan, S., Bo, W., and Liu, Y. RoFormer: Enhanced transformer with rotary position embedding. Neurocomputing, 568: 127063, 2024. (arXiv preprint arXiv:2104.09864)
+
+[21] Zhai, X., et al. SigLIP 2: Multimodal model pre-training with cross-entropy loss. arXiv preprint arXiv:2502.14786, 2025.
+
+[22] Mathew, M., Karatzas, D., and Jawahar, C. V. DocVQA: A dataset for vqa on document images. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV), pages 2200-2209, 2021.
+
+[23] Mathew, M., Bagal, V., Tito, R., Karatzas, D., Guerin, E., and Jawahar, C. V. InfographicVQA. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV), pages 2582-2591, 2022.
+
+[24] Li, B., Wang, R., Wang, G., Hou, Y., Zhao, J., and Lifu, H. Evaluating object hallucination in large vision-language models. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing (EMNLP), pages 292-305, 2023.
+
+[25] Liu, Y., Duan, H., Zhang, Y., Li, B., Zhang, S., Zhao, W., Yuan, Y., Wang, J., Zhang, Y., and He, C. MMBench: Is your multi-modal model an all-around player? In European Conference on Computer Vision (ECCV), 2024.
