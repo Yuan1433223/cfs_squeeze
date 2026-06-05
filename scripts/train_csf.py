@@ -72,6 +72,9 @@ def build_argparser():
     p.add_argument("--max-new-tokens-skip", type=int, default=64,
                    help="prompts whose answer span exceeds this are skipped")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--max-pixels", type=int, default=1280 * 1280,
+                   help="cap input image pixels to bound visual-token length (default ~1.6M)")
+    p.add_argument("--no-grad-ckpt", action="store_true", help="disable gradient checkpointing")
     return p
 
 
@@ -173,6 +176,9 @@ def _ablate_axis_(module, axis):
 def main():
     args = build_argparser().parse_args()
 
+    # reduce fragmentation OOMs on 24G
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     import torch
     from transformers import AutoProcessor
     from modelscope import snapshot_download
@@ -190,11 +196,18 @@ def main():
 
     # ----- model -----
     model_dir = snapshot_download(args.model)
-    proc = AutoProcessor.from_pretrained(model_dir)
+    proc = AutoProcessor.from_pretrained(model_dir, max_pixels=args.max_pixels)
     model = ModelCls.from_pretrained(model_dir, dtype=torch.bfloat16).to("cuda")
     # freeze the vision tower entirely
     for p in model.model.visual.parameters():
         p.requires_grad = False
+    # gradient checkpointing -- cuts activation memory ~50% at ~30% speed cost
+    if not args.no_grad_ckpt:
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        print("[mem] gradient checkpointing ON")
     # LoRA on the LLM attention modules
     lora_cfg = LoraConfig(
         r=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, bias="none",
