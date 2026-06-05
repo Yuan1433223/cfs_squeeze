@@ -257,7 +257,9 @@ def main():
         except Exception as e:
             print(f"[skip] encoding failed: {type(e).__name__}: {e}")
             continue
-        if batch["input_ids"].shape[1] - (batch["labels"] != -100).sum().item() > args.max_new_tokens_skip:
+        ans_len = int((batch["labels"] != -100).sum().item())
+        if ans_len == 0 or ans_len > args.max_new_tokens_skip:
+            if verbose: print(f"[dbg s{step}] skip: ans_len={ans_len}"); sys.stdout.flush()
             continue
         if verbose:
             print(f"[dbg s{step}] enc shape ids={tuple(batch['input_ids'].shape)} "
