@@ -79,8 +79,8 @@ def build_argparser():
 # Data sampling                                                                #
 # --------------------------------------------------------------------------- #
 def build_data_iter(spec: str, total: int):
-    """Yield (image, question, answer_str) tuples drawn round-robin from the mix."""
-    from _docvqa_eval import load_benchmark
+    """Yield (image, prompt, answer_str) tuples drawn round-robin from the mix."""
+    from _docvqa_eval import load_train_subset
     parts = []
     for tok in spec.split(","):
         name, frac = tok.split(":")
@@ -88,7 +88,7 @@ def build_data_iter(spec: str, total: int):
     pools = {}
     for name, frac in parts:
         n = max(2, int(total * frac))
-        pools[name] = load_benchmark(name, n)
+        pools[name] = load_train_subset(name, n)   # NOTE: lightweight, fetches only what is needed
         print(f"[data] {name}: {len(pools[name])} samples")
     keys = list(pools.keys())
     n_each = {k: 0 for k in keys}

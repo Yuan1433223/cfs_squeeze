@@ -328,6 +328,58 @@ def load_docvqa(subset: int):
     return load_benchmark("docvqa", subset)
 
 
+def load_train_subset(name: str, subset: int):
+    """Lightweight train-data loader.
+
+    The evaluation path snapshot-downloads the whole dataset repo (5+ GB for
+    DocVQA + Infographic train) which is wasteful when we only need ``subset``
+    samples. Here we fetch ONLY the first train shard via
+    :func:`_ms_download_file`, decode it locally with pandas, and return the
+    requested number of items in the same shape as :func:`load_benchmark`.
+    """
+    import pandas as pd
+    candidates = {
+        "docvqa": [("lmms-lab/DocVQA", "DocVQA/train-00000-of-00001.parquet"),
+                   ("lmms-lab/DocVQA", "DocVQA/train-00000-of-00012.parquet"),
+                   ("lmms-lab/DocVQA", "train-00000-of-00012.parquet")],
+        "infovqa": [("lmms-lab/DocVQA", "InfographicVQA/train-00000-of-00024.parquet"),
+                    ("lmms-lab/DocVQA", "InfographicVQA/train-00000-of-00001.parquet")],
+        "pope": [("lmms-lab/POPE", "Full/random-00000-of-00001.parquet"),
+                 ("lmms-lab/POPE", "Full/popular-00000-of-00001.parquet")],
+    }
+    if name not in candidates:
+        raise ValueError(f"unknown train dataset {name!r}; supported: {list(candidates)}")
+    last_err = None
+    for repo, fp in candidates[name]:
+        try:
+            local = _ms_download_file(repo, fp)
+        except Exception as e:
+            last_err = e
+            continue
+        try:
+            df = pd.read_parquet(local)
+        except Exception as e:
+            last_err = e
+            continue
+        items = []
+        for _, r in df.iterrows():
+            if len(items) >= subset:
+                break
+            if name == "pope":
+                items.append(dict(task="yesno",
+                                  image=_decode_image(r["image"]),
+                                  question=str(r["question"]),
+                                  answer=str(r.get("answer", "")).strip().lower()))
+            else:
+                items.append(dict(task="anls",
+                                  image=_decode_image(r["image"]),
+                                  question=str(r["question"]),
+                                  answers=list(r.get("answers", []) or [])))
+        if items:
+            return items
+    raise RuntimeError(f"load_train_subset({name}): no candidate worked. Last error: {last_err!r}")
+
+
 def load_model_and_module(model_name: str, keep_ratio: float, stride: int):
     """Load Qwen3-VL + a patched CSF-Squeeze module. Returns (model, proc, module)."""
     import torch
