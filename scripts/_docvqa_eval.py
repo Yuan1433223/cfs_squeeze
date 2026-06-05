@@ -102,15 +102,138 @@ def load_benchmark(name: str, subset: int):
     raise ValueError(f"unknown benchmark {name!r}")
 
 
+def _ms_download_file(repo: str, file_path: str, revision: str = "master") -> str:
+    """Download one file from a ModelScope dataset via the public API.
+
+    Bypasses ``datasets``/``MsDataset.load`` entirely so no HuggingFace Hub
+    metadata validation occurs. Cached on local disk by URL.
+    """
+    import requests
+    cache_root = os.path.expanduser("~/.cache/cfs_squeeze/datasets")
+    os.makedirs(cache_root, exist_ok=True)
+    safe = file_path.replace("/", "_").replace("\\", "_")
+    local = os.path.join(cache_root, f"{repo.replace('/', '_')}__{safe}")
+    if os.path.exists(local) and os.path.getsize(local) > 0:
+        return local
+    url = (f"https://www.modelscope.cn/api/v1/datasets/{repo}/repo"
+           f"?Source=SDK&Revision={revision}"
+           f"&FilePath={file_path.replace('/', '%2F')}")
+    with requests.get(url, stream=True, timeout=600) as r:
+        r.raise_for_status()
+        tmp = local + ".part"
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                if chunk:
+                    f.write(chunk)
+        os.replace(tmp, local)
+    return local
+
+
+def _ms_list_files(repo: str, revision: str = "master"):
+    """List file paths in a ModelScope dataset (best-effort)."""
+    import requests
+    url = (f"https://www.modelscope.cn/api/v1/datasets/{repo}/repo/files"
+           f"?Revision={revision}&Recursive=true")
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    data = r.json().get("Data", {})
+    files = data.get("Files") or data.get("files") or []
+    return [f.get("Path") or f.get("path") for f in files if isinstance(f, dict)]
+
+
+def _decode_image(field):
+    """Parquet 'image' columns may be {bytes, path} dicts, raw bytes, or PIL.Image."""
+    import io
+    from PIL import Image
+    if isinstance(field, dict):
+        b = field.get("bytes") or field.get("data")
+        if b:
+            return Image.open(io.BytesIO(b)).convert("RGB")
+        if field.get("path"):
+            return Image.open(field["path"]).convert("RGB")
+    if isinstance(field, (bytes, bytearray)):
+        return Image.open(io.BytesIO(field)).convert("RGB")
+    return field
+
+
+def _ms_load(candidates, split):
+    """DEPRECATED: kept for the docvqa family which already worked via this path.
+
+    For new datasets we use :func:`_ms_download_file` directly to avoid the
+    HF Hub metadata validation that triggers ``Couldn't reach ... on the Hub``
+    on the cloud DSW even after a successful ModelScope download.
+    """
+    from datasets import load_dataset
+    last_err = None
+    try:
+        from modelscope import dataset_snapshot_download
+    except Exception:
+        from modelscope.msdatasets import MsDataset
+        for repo, sub in candidates:
+            try:
+                kw = dict(split=split, trust_remote_code=True)
+                if sub is not None:
+                    kw["subset_name"] = sub
+                return MsDataset.load(repo, **kw).to_hf_dataset()
+            except Exception as e:
+                last_err = e
+        raise RuntimeError(f"MsDataset.load all failed; last={last_err!r}")
+
+    for repo, sub in candidates:
+        try:
+            local_dir = dataset_snapshot_download(dataset_id=repo)
+            ds = _scan_local_dataset(local_dir, split, sub)
+            if ds is not None:
+                return ds
+            if sub is not None:
+                return load_dataset(local_dir, sub, split=split, trust_remote_code=True)
+            return load_dataset(local_dir, split=split, trust_remote_code=True)
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(
+        f"None of the ModelScope candidates loaded: {candidates}. "
+        f"Last error: {type(last_err).__name__}: {str(last_err)[:200]}"
+    )
+
+
+def _scan_local_dataset(local_dir, split, sub):
+    """Best-effort: find a split-named parquet/json file under local_dir.
+
+    Patterns observed in ModelScope mirrors:
+      lmms-lab/POPE/Full/<split>-00000-of-00001.parquet
+      lmms-lab/DocVQA/<sub>/{validation,train}-*.parquet
+      *<split>*.{parquet,json,jsonl}
+    Tries narrower-then-wider globs and returns the first one ``datasets`` can read.
+    """
+    import glob
+    from datasets import load_dataset
+    base_candidates = []
+    if sub:
+        base_candidates.append(os.path.join(local_dir, sub))
+    base_candidates.extend([os.path.join(local_dir, "Full"), local_dir])
+    for base in base_candidates:
+        if not os.path.isdir(base):
+            continue
+        for ext, fmt in (("parquet", "parquet"), ("jsonl", "json"), ("json", "json")):
+            patterns = [
+                os.path.join(base, f"{split}*.{ext}"),
+                os.path.join(base, f"*{split}*.{ext}"),
+                os.path.join(base, "**", f"*{split}*.{ext}"),
+            ]
+            for pat in patterns:
+                files = sorted(glob.glob(pat, recursive=True))
+                if files:
+                    try:
+                        return load_dataset(fmt, data_files=files, split="train")
+                    except Exception:
+                        continue
+    return None
+
+
 def _load_docvqa_family(name: str, subset: int):
     spec = {"docvqa": "DocVQA", "infovqa": "InfographicVQA"}
-    repo, sub = "lmms-lab/DocVQA", spec[name]
-    try:
-        from modelscope.msdatasets import MsDataset
-        ds = MsDataset.load(repo, subset_name=sub, split="validation")
-    except Exception:
-        from datasets import load_dataset
-        ds = load_dataset(repo, sub, split="validation")
+    ds = _ms_load([("lmms-lab/DocVQA", spec[name])], split="validation")
     items = []
     for i, r in enumerate(ds):
         if i >= subset:
@@ -121,38 +244,71 @@ def _load_docvqa_family(name: str, subset: int):
 
 
 def _load_mmbench(subset: int):
-    """MMBench (dev): multi-choice. We expect fields: image, question, A/B/C/D, answer (label)."""
-    try:
-        from modelscope.msdatasets import MsDataset
-        ds = MsDataset.load("lmms-lab/MMBench", subset_name="MMBench_DEV_EN", split="dev")
-    except Exception:
-        from datasets import load_dataset
-        ds = load_dataset("lmms-lab/MMBench", "MMBench_DEV_EN", split="dev")
-    items = []
-    for i, r in enumerate(ds):
-        if i >= subset:
-            break
-        opts = {k: r.get(k) for k in ("A", "B", "C", "D") if r.get(k)}
-        items.append(dict(task="mc", image=r["image"], question=r["question"],
-                          options=opts, answer=str(r.get("answer", "")).strip().upper()))
-    return items
+    """MMBench (dev): multi-choice. Direct ModelScope file download (no datasets/HF)."""
+    import pandas as pd
+    repos = ["AI-ModelScope/MMBench_DEV_EN", "AI-ModelScope/MMBench", "modelscope/MMBench"]
+    last_err = None
+    for repo in repos:
+        try:
+            files = _ms_list_files(repo)
+        except Exception as e:
+            last_err = e
+            continue
+        # Prefer parquet files mentioning 'dev' or 'EN'.
+        ranked = sorted(
+            (f for f in files if f and (f.endswith(".parquet") or f.endswith(".tsv"))),
+            key=lambda f: (("dev" not in f.lower()), ("en" not in f.lower()), f),
+        )
+        for fp in ranked:
+            try:
+                local = _ms_download_file(repo, fp)
+                df = pd.read_parquet(local) if local.endswith(".parquet") else \
+                     pd.read_csv(local, sep="\t")
+                items = []
+                for _, r in df.iterrows():
+                    if len(items) >= subset:
+                        break
+                    opts = {k: r[k] for k in ("A", "B", "C", "D")
+                            if k in df.columns and pd.notna(r[k])}
+                    items.append(dict(task="mc",
+                                      image=_decode_image(r["image"] if "image" in df.columns else r.get("image_path")),
+                                      question=str(r["question"]),
+                                      options=opts,
+                                      answer=str(r.get("answer", "")).strip().upper()))
+                if items:
+                    return items
+            except Exception as e:
+                last_err = e
+                continue
+    raise RuntimeError(f"MMBench: no candidate worked. Last error: {last_err!r}")
 
 
 def _load_pope(subset: int):
-    """POPE: yes/no object-hallucination probe."""
-    try:
-        from modelscope.msdatasets import MsDataset
-        ds = MsDataset.load("lmms-lab/POPE", split="test")
-    except Exception:
-        from datasets import load_dataset
-        ds = load_dataset("lmms-lab/POPE", split="test")
-    items = []
-    for i, r in enumerate(ds):
-        if i >= subset:
-            break
-        items.append(dict(task="yesno", image=r["image"], question=r["question"],
-                          answer=str(r.get("answer", "")).strip().lower()))
-    return items
+    """POPE: yes/no. Read parquet files directly from a ModelScope mirror."""
+    import pandas as pd
+    repo = "lmms-lab/POPE"
+    splits = ("adversarial", "popular", "random")
+    per_split = max(1, subset // len(splits))
+    items, last_err = [], None
+    for split in splits:
+        try:
+            local = _ms_download_file(repo, f"Full/{split}-00000-of-00001.parquet")
+            df = pd.read_parquet(local)
+            taken = 0
+            for _, r in df.iterrows():
+                if taken >= per_split or len(items) >= subset:
+                    break
+                items.append(dict(task="yesno",
+                                  image=_decode_image(r["image"]),
+                                  question=str(r["question"]),
+                                  answer=str(r.get("answer", "")).strip().lower()))
+                taken += 1
+        except Exception as e:
+            last_err = e
+            continue
+    if not items:
+        raise RuntimeError(f"POPE: no split could be loaded. Last error: {last_err!r}")
+    return items[:subset]
 
 
 def load_docvqa(subset: int):
