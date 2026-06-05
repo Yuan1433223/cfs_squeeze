@@ -243,11 +243,15 @@ def main():
     losses_ce, losses_ent = [], []
     t0 = time.perf_counter()
     step = 0
+    DEBUG_FIRST = 2          # verbose for the first 2 steps
     while step < args.steps:
+        verbose = step < DEBUG_FIRST
+        if verbose: print(f"[dbg s{step}] next sample"); sys.stdout.flush()
         try:
             image, question, answer = next(data_iter)
         except StopIteration:
             break
+        if verbose: print(f"[dbg s{step}] got sample, encode..."); sys.stdout.flush()
         try:
             batch = _encode_with_label(proc, image, question, answer)
         except Exception as e:
@@ -255,9 +259,15 @@ def main():
             continue
         if batch["input_ids"].shape[1] - (batch["labels"] != -100).sum().item() > args.max_new_tokens_skip:
             continue
+        if verbose:
+            print(f"[dbg s{step}] enc shape ids={tuple(batch['input_ids'].shape)} "
+                  f"pix={tuple(batch.get('pixel_values', torch.empty(0)).shape)}")
+            sys.stdout.flush()
         batch = {k: v.to("cuda") for k, v in batch.items()}
+        if verbose: print(f"[dbg s{step}] -> cuda; calling forward..."); sys.stdout.flush()
 
         out = model(**batch)
+        if verbose: print(f"[dbg s{step}] forward done, loss={float(out.loss):.4f}; backward..."); sys.stdout.flush()
         loss_ce = out.loss
         # collect entropy across the latest forward via the patched module's stash:
         # we reuse module.entropy_running set in patch_qwen3vl when available.
@@ -271,6 +281,7 @@ def main():
             lam = lambda_at(step, args.steps, args.ent_peak, args.ent_warmup_frac)
         loss = loss_ce + lam * ent
         (loss / args.batch_accum).backward()
+        if verbose: print(f"[dbg s{step}] backward done"); sys.stdout.flush()
 
         losses_ce.append(float(loss_ce.detach()))
         losses_ent.append(float(ent.detach()) if isinstance(ent, torch.Tensor) else 0.0)

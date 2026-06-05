@@ -127,17 +127,17 @@ def _compress_row(
     Returns (new_embeds [L',D], position_ids [3,L'], visual_mask [L']).
     """
     device = inputs_embeds_row.device
-    is_img = input_ids_row == image_token_id
+    is_img = (input_ids_row == image_token_id).cpu().tolist()   # avoid per-token CUDA sync in the loop below
     out_embeds, pos_segments, vis_flags = [], [], []
     st_idx = 0
     i = 0
     img_ptr = 0
     L = input_ids_row.shape[0]
     while i < L:
-        if not bool(is_img[i]):
+        if not is_img[i]:
             # text run [i, j)
             j = i
-            while j < L and not bool(is_img[j]):
+            while j < L and not is_img[j]:
                 j += 1
             text_len = j - i
             out_embeds.append(inputs_embeds_row[i:j])
@@ -149,7 +149,7 @@ def _compress_row(
         else:
             # one image placeholder run -> replace with compressed block
             j = i
-            while j < L and bool(is_img[j]):
+            while j < L and is_img[j]:
                 j += 1
             comp_embeds, out_pos = per_image[img_ptr]
             img_ptr += 1
