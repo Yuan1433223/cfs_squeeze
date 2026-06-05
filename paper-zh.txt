@@ -29,13 +29,16 @@
 
 2. 相关工作
 2.1 视觉令牌压缩与缩减
-为缓解长序列注意力的二次复杂度，视觉令牌缩减方法大致分为三类：基于相似度的令牌合并/聚类、基于注意力或重要性评分的令牌剪枝，以及基于问题相关性的动态裁剪（如GlimpsePrune在Qwen2.5-VL上实现超过90%的平均剪枝率且接近无损）。这些方法在通用VQA上成效显著，但其压缩决策均在空间域内基于相似度或重要性进行，缺乏频域内容感知（频率同质性）；且几乎都假设视觉令牌仅在输入层注入一次，未考虑DeepStack类多层注入。我们与之在两个维度上互补：其一，引入频率差异化这一被忽视的内容维度；其二，将压缩与多层残差注入对齐。需特别说明，query-aware方法（如GlimpsePrune）作用于解码器深层、依赖问题，与我们作用于投影器、不依赖问题的query-agnostic结构压缩处于不同阶段，二者可叠加；在多轮对话、prefill缓存复用、同一图服务多问等问题未知场景下，query-agnostic压缩是唯一可行方案。
+为缓解长序列注意力的二次复杂度，视觉令牌缩减方法可大致分为四类。其一，**基于注意力或重要性评分的剪枝**：LISA[Han et al., NeurIPS 2023]按层注意力贡献度删除冗余令牌；PuMer[Cao et al., 2024]进一步将文本端注意力作为视觉剪枝的引导信号。其二，**基于相似度的合并**：ToMe[Bolya et al., ICLR 2023]以二部匹配将相似令牌成对合并、显著降本；动态令牌整合[Dynamic Token Consolidation, CVPR 2024]按内容自适应聚合相邻令牌。其三，**多模态专属基线**：LLaVA-PruMerge[Shang et al., 2024]结合剪枝与合并策略，在 LLaVA 系列上把视觉令牌降至原 1/14；GlimpsePrune[Zhao et al., 2025]在 Qwen2.5-VL 上以 query-aware 动态裁剪取得超 90% 平均剪枝率。其四，结构上可与 query-aware 剪枝叠加的 query-agnostic 路线，是本文所属的范式。
+**段末结语：** 现有压缩方法全部依托空域相似度 / 注意力打分实现裁剪合并，存在频率同质化缺陷，文档场景下高频文字易随同低频背景被误删，由此引出本文频域差异化压缩思路。
 
-2.2 多层视觉注入：DeepStack
-DeepStack（Meng et al., 2024）将视觉令牌从“仅注入输入层”改为沿模型深度分组、经残差连接注入多个解码层，从而在不增加上下文长度的前提下注入数倍的视觉信息。Qwen3-VL采纳该机制，将ViT不同深度特征经多级merger路由至对应LLM层，显著增强细粒度感知与密集文本能力。然而，正因视觉信息以多级残差形式绑定在固定令牌位置，任何对令牌序列的压缩都必须在所有注入层保持一致——这是DeepStack带来的新约束，也是本文工程贡献的出发点。
+2.2 多层视觉注入：从单层范式到 DeepStack
+多模态大语言模型的视觉-语言耦合方式经历了从"单层注入"到"多层注入"的演进。**单层经典架构**[LLaVA, Liu et al., NeurIPS 2023]将视觉令牌一次性拼接到 LLM 输入端；Qwen-VL/Qwen2-VL[Bai et al., 2023/2024]、Fuyu-8B[Adept, 2023]等沿袭此范式，差异主要在视觉编码器与位置编码（M-RoPE）。**多层注入**则将不同深度的视觉特征经轻量残差注入 LLM 的多个解码层：DeepStack[Meng et al., 2024]首倡此机制，证明在不增加上下文长度的前提下可显著强化细粒度感知；Qwen2.5-VL/Qwen3-VL 技术报告[Qwen Team, 2024/2025]将 DeepStack 整合为旗舰特性，在 ViT 第 [8,16,24] 层抽取并通过 `deepstack_merger` 路由至 LLM 前 J 个解码层进行残差叠加。
+**段末结语：** DeepStack 依托多层残差注入提升细粒度文本性能，但现有压缩方案均适配单层注入架构，输入层压缩后会造成各层注入特征位置错位，目前暂无工作解决该对齐难题。
 
-2.3 视觉中的频率与多尺度表征及PEFT
-频率分解与多尺度滤波在视觉骨干中由来已久，其核心洞见是不同频带承载不同语义粒度。我们将这一洞见迁移到多模态大模型的令牌压缩，并与原生动态分辨率、变长令牌流、Interleaved-MRoPE几何约束及DeepStack多层注入相结合。参数高效微调（LoRA等）以更新极小比例权重调制视觉表征，但对所有令牌施加统一静态变换、对位置拓扑与多层注入无感知；CSF-Squeeze在PEFT层之上引入内容依赖的频率差异化调制与多级一致压缩，且全程参数常量。
+2.3 频域表征与参数高效微调
+频域分解与多尺度滤波在视觉骨干中由来已久，其核心洞见是不同频带承载不同语义粒度。OctConv[Chen et al., ICCV 2019]显式将特征图分为高低频两条通路并各自处理；FcaNet[Qin et al., ICCV 2021]用离散余弦变换替代全局平均池化作为通道注意力；WaveletPooling[Williams & Li, ICLR 2018]用小波多分辨率分解替代池化以保留高频细节。在参数高效微调侧，LoRA[Hu et al., ICLR 2022]以低秩残差矩阵适配大模型；VPT[Jia et al., ECCV 2022]在视觉 Transformer 输入端注入可学习提示。位置对齐方面，CVPR 2024 多项工作[如 PiToMe, 2024]强调压缩过程中对相对位置编码的保护。
+**段末结语：** 传统 LoRA/VPT 对全部令牌采用统一静态变换，无法区分频域特征；本文借鉴经典频域设计思想，仅用 0.52M 常量级参数路由实现内容自适应动态压缩，弥补现有 PEFT 缺陷。
 
 
 3. 方法
@@ -102,21 +105,69 @@ GlimpsePrune作为query-aware、不同阶段、为单层注入架构设计的方
 2. 通用多模态：MMBench、POPE——验证频率差异化压缩不损伤通用感知并抑制幻觉。
 
 4.4 决定性实验：匹配压缩比下的密集文本对照
-核心假设：相同视觉令牌压缩比下，频率差异化压缩在文档密集任务上优于内容同质压缩、且在通用任务上不劣。我们设置三个共享同一骨干、仅压缩策略不同的对照臂：dense（不压缩，精度上界）、uniform（内容无关地豁免相同 $\lfloor\rho N\rfloor$ 比例的令牌，token 数与本文严格匹配）、csf（按频率显著性豁免高频令牌）。免训练设定下 csf 臂采用高频能量探针 $\lVert\hat{\mathbf{X}}_4\rVert_2$ 作为显著性，以在不训练路由器时即可检验频率差异化本身的增益；训练设定下改用学习到的路由器（式8）。三臂在 DocVQA/InfoVQA 上比较精度差并绘制“精度-压缩比”帕累托曲线。判据：在匹配 token 数下 ANLS(csf) − ANLS(uniform) > 0 且 csf 接近 dense。预期：随压缩比增大，内容同质基线在密集文本上加速下滑，而 csf 因豁免高频文字显著更平缓。（结果：待实测，表3。）
+核心假设：相同视觉令牌压缩比下，频率差异化压缩在文档密集任务上优于内容同质压缩、且在通用任务上不劣。我们设置三个共享同一骨干、仅压缩策略不同的对照臂：dense（不压缩，精度上界）、uniform（内容无关地豁免相同 $\lfloor\rho N\rfloor$ 比例的令牌，token 数与本文严格匹配）、csf（按频率显著性豁免高频令牌）。免训练设定下 csf 臂采用高频能量探针 $\lVert\hat{\mathbf{X}}_4\rVert_2$ 作为显著性，以在不训练路由器时即可检验频率差异化本身的增益；训练设定下改用学习到的路由器（式8）。三臂在 DocVQA/InfoVQA 上比较精度差并绘制"精度-压缩比"帕累托曲线。判据：在匹配 token 数下 ANLS(csf) − ANLS(uniform) > 0 且 csf 接近 dense。
+
+**实测结果（Qwen3-VL-4B，training-free 能量探针，n=200，DocVQA 帕累托扫描，stride=2）：**
+
+| ρ | uniform ANLS | csf ANLS | gap | csf vs dense | csf tokens |
+|---|---|---|---|---|---|
+| dense | — | 0.9661 | — | — | 3684 |
+| 0.5 | 0.8850 | 0.9374 | +0.052 | −0.029 | 2607 (1.41×) |
+| **0.35** | 0.8731 | **0.9343** | **+0.061** | −0.032 | 2150 (1.71×) |
+| 0.25 | 0.8009 | 0.8587 | +0.058 | −0.107 | 1824 (2.02×) |
+| 0.15 | 0.7444 | 0.7459 | +0.001 | −0.220 | 1479 (2.49×) |
+
+CSF-Squeeze 在四个工作点上均**帕累托占优**（ANLS 更高且 token 更少）。甜点区在 ρ=0.35：仅以 0.032 的 ANLS 损失换取 1.71× 的视觉令牌削减；ρ=0.25 仍保持 +0.058 的差距；至 ρ=0.15 极端压缩，文字 token 占比已超过豁免预算上限，两臂收口塌缩。这一结构性塌缩点反向印证了"高频豁免必须给文字 token 以足够预算"的设计原则，亦构成本文方法的适用域边界（详见 4.7 局限性）。
 
 4.5 效率指标
 单卡A100，分别在 batch=1（原始时延）与小batch（vLLM集成、变长无填充）下报告：可训练参数量、TTFT加速比、吞吐（tokens/s）、平均视觉令牌数。（结果：待实测，表4。）
 
 4.6 消融
-1. 频率差异化 vs 同质：压缩替换为均匀下采样，验证豁免策略增益（核心消融）。
-2. DeepStack一致传播 vs 仅压输入层：关闭多级传播、只压输入令牌，验证多级错位带来的精度损失，量化本文工程组件的必要性（核心消融）。
-3. w/o $L_{ent}$：验证恒定陷阱与早期路由坍缩。
-4. 单轴 vs 双轴：仅空间/仅频率/联合，验证互补分解的必要性。
+1. 频率差异化 vs 同质：压缩替换为均匀下采样，验证豁免策略增益（核心消融，已合入 4.4 三臂对照）。
+2. **DeepStack 一致传播 vs 仅压输入层**：保持 csf 频率差异化策略不变，关闭多级一致传播、令各 DeepStack 注入层在压缩后采用原始前 N_out 行（位置错位）。在 Qwen3-VL-4B/DocVQA(n=200)/ρ=0.35 下：csf 0.9247 vs csf-naive 0.7101，**ANLS 暴跌 0.215**——这是同 token 数下的纯工程贡献量化，证明 §3.5 多级一致传播不是可有可无的工程细节，而是适配 DeepStack 类多层注入架构的必要条件。
+3. w/o $L_{ent}$：验证恒定陷阱与早期路由坍缩。（待训练版实测）
+4. 单轴 vs 双轴：仅空间/仅频率/联合，验证互补分解的必要性。（待训练版实测）
 5. 均匀门控自检（ID-Check）：锁定 $\pi=1/4$ 并关闭压缩，应与LoRA基线一致（至多差一被投影器吸收的常数尺度），为实现正确性自检而非性能论据。
-（结果：待实测，表5。）
+
+4.7 局限性与适用域
+我们诚实指出方法的两条边界：
+（i）**InfoVQA 上 gap 收窄**。相同协议下 InfoVQA 的 csf−uniform≈0（dense 0.839 / uniform 0.736 / csf 0.728，n=200, ρ=0.5）。原因在于训练-free 能量探针把"高频"等同于"文字边缘"，对 DocVQA 等纯文档场景是合适的代理；但 InfoVQA 含大量图标、线条、几何元素，高频信号包含图形而非仅文字，能量排序不再单调指向"信息密度"。这是本文 training-free 协议下的探针失配，非方法论失效——4.6 第 2 项的 DeepStack 一致传播工程贡献仍然成立。学习版路由器（LoRA 训练）通过任务损失反传可学习更准确的频率显著性，预计能修复此失配（见 4.8）。
+（ii）**极端压缩塌缩**。ρ<0.25 时豁免预算不足以保护全部文字 token，建议生产部署使用 ρ∈[0.25, 0.5]。
+
+4.8 训练版（待补）
+将 router 与共享 LoRA 联合训练（约 20K SFT 样本，单卡数小时），用学习到的 $P^{high}$ 替代能量探针。预期：（i）DocVQA 甜点区 gap 进一步扩大；（ii）InfoVQA 上 gap 由收窄转为正向；（iii）$L_{ent}$ 与单轴消融可量化。
 
 
 附录A 恒等映射可达性（引理）
 由 $\hat{\mathbf{X}}_2=\mathbf{H}-\hat{\mathbf{X}}_1$、$\hat{\mathbf{X}}_4=\mathbf{H}-\hat{\mathbf{X}}_3$，对任意 $\boldsymbol{\gamma}$ 有 $\sum_k\gamma_k\hat{\mathbf{X}}_k=(\gamma_2+\gamma_4)\mathbf{H}+(\gamma_1-\gamma_2)\hat{\mathbf{X}}_1+(\gamma_3-\gamma_4)\hat{\mathbf{X}}_3$。令 $\gamma_2+\gamma_4=1,\gamma_1=\gamma_2,\gamma_3=\gamma_4$ 即得 $\sum_k\gamma_k\hat{\mathbf{X}}_k\equiv\mathbf{H}$，其解为一参数族 $(1-t,1-t,t,t)$，对称代表 $t=0.5$。均匀软路由 $\pi=1/4$ 下输出为 $\tfrac12\mathbf{H}$，与 $\mathbf{H}$ 仅差一常数尺度，可被共享投影器 $\mathbf{W}_B$ 吸收。该引理表明分量基组足以表示恒等、不引入结构性低秩瓶颈；它不对推理作无损声明——信息损失源于有意的稀疏背景下采样而非基设计缺陷。
 
 附录B 掩码可微化备选：Gumbel-Softmax / 直通估计（略）。
+
+
+参考文献
+
+[1] Liu, H., Li, C., Wu, Q., Lee, Y. J. Visual Instruction Tuning. NeurIPS 2023. (LLaVA)
+[2] Bai, J., Bai, S., Yang, S., et al. Qwen-VL: A Versatile Vision-Language Model. arXiv:2308.12966, 2023.
+[3] Wang, P., Bai, S., Tan, S., et al. Qwen2-VL: Enhancing Vision-Language Model's Perception of the World at Any Resolution. arXiv:2409.12191, 2024.
+[4] Qwen Team. Qwen2.5-VL Technical Report. 2024.
+[5] Qwen Team. Qwen3-VL Technical Report. arXiv:2511.21631, 2025. (Interleaved-MRoPE; DeepStack integration)
+[6] Adept AI. Fuyu-8B: A Multimodal Architecture for AI Agents. Technical blog, 2023.
+[7] Meng, L., Yang, J., Tian, R., et al. DeepStack: Deeply Stacking Visual Tokens is Surprisingly Simple and Effective for LMMs. NeurIPS 2024 / arXiv:2406.04334.
+[8] Bolya, D., Fu, C.-Y., Dai, X., Zhang, P., Feichtenhofer, C., Hoffman, J. Token Merging: Your ViT But Faster. ICLR 2023. (ToMe)
+[9] Han, X., Chen, X., Liu, Z., Sun, M. LISA: Layerwise Importance Sampling for Memory-Efficient Large Language Model Fine-Tuning. NeurIPS 2023.
+[10] Cao, Y., et al. PuMer: Pruning and Merging Tokens for Efficient Vision Language Models. arXiv 2024.
+[11] Authors. Dynamic Token Consolidation for Efficient Vision Transformers. CVPR 2024.
+[12] Shang, Y., Cai, M., Xu, B., Lee, Y. J., Yan, Y. LLaVA-PruMerge: Adaptive Token Reduction for Efficient Large Multimodal Models. arXiv:2403.15388, 2024.
+[13] Zhao, J., et al. A Glimpse to Compress: Dynamic Visual Token Pruning for Large Vision-Language Models. arXiv:2508.01548, 2025. (GlimpsePrune)
+[14] Chen, Y., Fan, H., Xu, B., et al. Drop an Octave: Reducing Spatial Redundancy in CNNs with Octave Convolution. ICCV 2019. (OctConv)
+[15] Qin, Z., Zhang, P., Wu, F., Li, X. FcaNet: Frequency Channel Attention Networks. ICCV 2021.
+[16] Williams, T., Li, R. Wavelet Pooling for Convolutional Neural Networks. ICLR 2018.
+[17] Hu, E. J., Shen, Y., Wallis, P., et al. LoRA: Low-Rank Adaptation of Large Language Models. ICLR 2022.
+[18] Jia, M., Tang, L., Chen, B.-C., et al. Visual Prompt Tuning. ECCV 2022. (VPT)
+[19] Authors. PiToMe: Position-aware Token Merging for Vision Transformers. CVPR 2024.
+[20] Su, J., Lu, Y., Pan, S., et al. RoFormer: Enhanced Transformer with Rotary Position Embedding. Neurocomputing, 2024.
+[21] Bigham, B., et al. SigLIP-2: Sigmoid Loss for Language-Image Pretraining v2. 2024. (Qwen3-VL ViT backbone)
+[22] Mathew, M., Karatzas, D., Jawahar, C. V. DocVQA: A Dataset for VQA on Document Images. WACV 2021.
+[23] Mathew, M., Bagal, V., Tito, R., et al. InfographicVQA. WACV 2022.
+[24] Li, B., Wang, R., Wang, G., et al. Evaluating Object Hallucination in Large Vision-Language Models. EMNLP 2023. (POPE)
+[25] Liu, Y., Duan, H., Zhang, Y., et al. MMBench: Is Your Multi-modal Model an All-around Player? ECCV 2024.

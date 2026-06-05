@@ -15,6 +15,16 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+
+def _progress(iterable, total=None, desc=None):
+    """tqdm if available (cloud env has it via transformers); plain iter otherwise."""
+    try:
+        from tqdm import tqdm
+        return tqdm(iterable, total=total, desc=desc, leave=False, dynamic_ncols=True,
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]")
+    except Exception:
+        return iterable
+
 # DocVQA convention: prompt the model for a short answer so ANLS can match.
 SHORT_ANSWER = " Answer the question using a single word or phrase."
 
@@ -75,30 +85,73 @@ def anls(pred: str, golds, threshold: float = 0.5) -> float:
 # Data + model loading (GPU/transformers required)                            #
 # --------------------------------------------------------------------------- #
 def load_benchmark(name: str, subset: int):
-    """Load a dense-text VQA validation subset. Supported: docvqa, infovqa.
+    """Load a VQA validation subset. Supported:
+        docvqa, infovqa : free-form short answer + ANLS
+        mmbench         : multi-choice (A/B/C/D)        + accuracy
+        pope            : yes/no                         + accuracy
 
-    Tries ModelScope then HF datasets; both expose (image, question, answers).
-    Dataset ids/fields below match the lmms-lab mirrors; adjust if the box differs.
+    Each item carries ``task`` so eval routines pick the right scoring.
     """
     name = name.lower()
-    spec = {
-        "docvqa": ("lmms-lab/DocVQA", "DocVQA"),
-        "infovqa": ("lmms-lab/DocVQA", "InfographicVQA"),
-    }
-    if name not in spec:
-        raise ValueError(f"unknown benchmark {name!r}; supported: {list(spec)}")
-    repo, subset_name = spec[name]
+    if name in ("docvqa", "infovqa"):
+        return _load_docvqa_family(name, subset)
+    if name == "mmbench":
+        return _load_mmbench(subset)
+    if name == "pope":
+        return _load_pope(subset)
+    raise ValueError(f"unknown benchmark {name!r}")
+
+
+def _load_docvqa_family(name: str, subset: int):
+    spec = {"docvqa": "DocVQA", "infovqa": "InfographicVQA"}
+    repo, sub = "lmms-lab/DocVQA", spec[name]
     try:
         from modelscope.msdatasets import MsDataset
-        ds = MsDataset.load(repo, subset_name=subset_name, split="validation")
+        ds = MsDataset.load(repo, subset_name=sub, split="validation")
     except Exception:
         from datasets import load_dataset
-        ds = load_dataset(repo, subset_name, split="validation")
+        ds = load_dataset(repo, sub, split="validation")
     items = []
     for i, r in enumerate(ds):
         if i >= subset:
             break
-        items.append({"image": r["image"], "question": r["question"], "answers": r.get("answers", [])})
+        items.append(dict(task="anls", image=r["image"], question=r["question"],
+                          answers=r.get("answers", [])))
+    return items
+
+
+def _load_mmbench(subset: int):
+    """MMBench (dev): multi-choice. We expect fields: image, question, A/B/C/D, answer (label)."""
+    try:
+        from modelscope.msdatasets import MsDataset
+        ds = MsDataset.load("lmms-lab/MMBench", subset_name="MMBench_DEV_EN", split="dev")
+    except Exception:
+        from datasets import load_dataset
+        ds = load_dataset("lmms-lab/MMBench", "MMBench_DEV_EN", split="dev")
+    items = []
+    for i, r in enumerate(ds):
+        if i >= subset:
+            break
+        opts = {k: r.get(k) for k in ("A", "B", "C", "D") if r.get(k)}
+        items.append(dict(task="mc", image=r["image"], question=r["question"],
+                          options=opts, answer=str(r.get("answer", "")).strip().upper()))
+    return items
+
+
+def _load_pope(subset: int):
+    """POPE: yes/no object-hallucination probe."""
+    try:
+        from modelscope.msdatasets import MsDataset
+        ds = MsDataset.load("lmms-lab/POPE", split="test")
+    except Exception:
+        from datasets import load_dataset
+        ds = load_dataset("lmms-lab/POPE", split="test")
+    items = []
+    for i, r in enumerate(ds):
+        if i >= subset:
+            break
+        items.append(dict(task="yesno", image=r["image"], question=r["question"],
+                          answer=str(r.get("answer", "")).strip().lower()))
     return items
 
 
@@ -158,27 +211,138 @@ def configure_arm(module, arm: str, keep_ratio=None, stride=None):
 
 
 def eval_arm(model, proc, module, data, arm, max_new_tokens=32, debug=0):
-    """Evaluate one arm over ``data``. Returns (mean_anls, mean_visual_tokens)."""
+    """Evaluate one arm over ``data``. Returns (mean_score, mean_visual_tokens).
+
+    Dispatches by item['task']:
+        anls   -> ANLS (DocVQA / InfographicVQA, short free-form)
+        mc     -> exact-letter accuracy (MMBench, A/B/C/D)
+        yesno  -> exact-yes/no accuracy (POPE)
+    """
     import torch
 
     merge = model.model.visual.spatial_merge_size
     scores, tok_counts = [], []
+    running_score = 0.0
+    pbar = _progress(range(len(data)), total=len(data), desc=f"eval/{arm}")
     with torch.no_grad():
-        for si, r in enumerate(data):
+        for si in pbar:
+            r = data[si]
+            task = r.get("task", "anls")
+            text_q, gen_max, score_fn = _format_question(r, task, max_new_tokens)
             messages = [{"role": "user", "content": [
                 {"type": "image", "image": r["image"]},
-                {"type": "text", "text": r["question"] + SHORT_ANSWER}]}]
+                {"type": "text", "text": text_q}]}]
             text = proc.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = proc(text=[text], images=[r["image"]], return_tensors="pt").to("cuda")
             thw = inputs["image_grid_thw"]
             n_vis = int((thw.prod(-1) // merge ** 2).sum())
-            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+            out = model.generate(**inputs, max_new_tokens=gen_max, do_sample=False)
             tok_counts.append(n_vis if arm == "dense" else module.last_n_out)
             gen = proc.batch_decode(out[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0]
-            pred = _clean_generation(gen)
-            sc = anls(pred, r["answers"])
+            sc = score_fn(gen, r)
             scores.append(sc)
+            running_score = sum(scores) / len(scores)
+            if hasattr(pbar, "set_postfix_str"):
+                pbar.set_postfix_str(f"score={running_score:.3f}")
             if debug and si < debug:
-                print(f"  [{arm}] Q={r['question'][:50]!r} "
-                      f"gold={_as_answer_list(r['answers'])[:3]} pred={pred[:50]!r} anls={sc:.3f}")
+                print(f"  [{arm}/{task}] Q={r['question'][:40]!r} pred={gen.strip()[:50]!r} score={sc:.3f}")
     return sum(scores) / len(scores), sum(tok_counts) / len(tok_counts)
+
+
+def _format_question(r, task, max_new_tokens):
+    """Return (text, gen_max, score_fn) tailored to the task."""
+    if task == "anls":
+        return (r["question"] + SHORT_ANSWER, max_new_tokens,
+                lambda gen, r: anls(_clean_generation(gen), r["answers"]))
+    if task == "mc":
+        opts = r.get("options", {})
+        opt_lines = "\n".join(f"{k}. {v}" for k, v in opts.items())
+        prompt = (f"{r['question']}\n{opt_lines}\n"
+                  "Answer with the option letter (A, B, C or D) only.")
+        gold = r.get("answer", "").strip().upper()
+        return prompt, 4, lambda gen, r: float(_extract_letter(gen) == gold)
+    if task == "yesno":
+        prompt = r["question"] + " Answer yes or no."
+        gold = r.get("answer", "").strip().lower()
+        return prompt, 4, lambda gen, r: float(_extract_yesno(gen) == gold)
+    raise ValueError(f"unknown task {task!r}")
+
+
+def _extract_letter(text: str) -> str:
+    import re
+    m = re.search(r"\b([ABCD])\b", text.upper())
+    return m.group(1) if m else ""
+
+
+def _extract_yesno(text: str) -> str:
+    t = text.strip().lower()
+    if t.startswith("yes") or " yes" in t.split(".")[0]:
+        return "yes"
+    if t.startswith("no") or " no" in t.split(".")[0]:
+        return "no"
+    return ""
+
+
+# --------------------------------------------------------------------------- #
+# Efficiency timing (TTFT, throughput) -- decoupled from accuracy evaluation. #
+# --------------------------------------------------------------------------- #
+def time_arm(model, proc, module, data, arm, gen_tokens=64, warmup=2):
+    """Per-image TTFT (s) and decode throughput (tokens/s).
+
+    TTFT measured as the wall-clock to produce the FIRST output token from a fully
+    prepared input batch (single-image, batch=1) -- the latency users feel before
+    streaming starts. Throughput measured over a fixed-length greedy continuation
+    of ``gen_tokens`` after the first token. CUDA events used for accurate GPU timing.
+    """
+    import time
+    import torch
+
+    merge = model.model.visual.spatial_merge_size
+    ttft, decode_tps, vis_toks = [], [], []
+    pbar = _progress(range(len(data)), total=len(data), desc=f"time/{arm}")
+    with torch.no_grad():
+        for si in pbar:
+            r = data[si]
+            task = r.get("task", "anls")
+            text_q, _, _ = _format_question(r, task, gen_tokens)
+            messages = [{"role": "user", "content": [
+                {"type": "image", "image": r["image"]},
+                {"type": "text", "text": text_q}]}]
+            text = proc.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = proc(text=[text], images=[r["image"]], return_tensors="pt").to("cuda")
+            thw = inputs["image_grid_thw"]
+            n_vis = int((thw.prod(-1) // merge ** 2).sum())
+
+            # TTFT: time to first generated token.
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            _ = model.generate(**inputs, max_new_tokens=1, do_sample=False)
+            torch.cuda.synchronize()
+            t_first = time.perf_counter() - t0
+
+            # Decode throughput: gen_tokens additional tokens.
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            out = model.generate(**inputs, max_new_tokens=gen_tokens, do_sample=False)
+            torch.cuda.synchronize()
+            t_gen = time.perf_counter() - t0
+            n_new = out.shape[1] - inputs["input_ids"].shape[1]
+
+            if si < warmup:                        # discard warmup iterations
+                if hasattr(pbar, "set_postfix_str"):
+                    pbar.set_postfix_str("warmup")
+                continue
+            ttft.append(t_first)
+            decode_tps.append(n_new / max(t_gen, 1e-6))
+            vis_toks.append(n_vis if arm == "dense" else module.last_n_out)
+            if hasattr(pbar, "set_postfix_str"):
+                pbar.set_postfix_str(f"TTFT={1000*t_first:.0f}ms tps={n_new/max(t_gen,1e-6):.1f}")
+
+    n = max(len(ttft), 1)
+    return dict(
+        arm=arm,
+        ttft_ms=1000.0 * sum(ttft) / n,
+        throughput_tps=sum(decode_tps) / n,
+        avg_visual_tokens=sum(vis_toks) / n,
+        n_samples=n,
+    )
