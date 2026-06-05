@@ -253,7 +253,13 @@ def _load_mmbench(subset: int):
     """
     import pandas as pd
     candidates = [
-        # (repo, file_path) -- ordered by likelihood:
+        # (repo, file_path) -- ordered by likelihood. lmms-lab/MMBench is the
+        # confirmed live mirror; we try its most likely dev-split file paths first.
+        ("lmms-lab/MMBench", "MMBench_DEV_EN/dev-00000-of-00001.parquet"),
+        ("lmms-lab/MMBench", "MMBench_DEV_EN/test-00000-of-00001.parquet"),
+        ("lmms-lab/MMBench", "dev/dev-00000-of-00001.parquet"),
+        ("lmms-lab/MMBench", "data/MMBench_DEV_EN-00000-of-00001.parquet"),
+        ("lmms-lab/MMBench", "MMBench_DEV_EN-00000-of-00001.parquet"),
         ("AI-ModelScope/MMBench", "MMBench_DEV_EN/dev-00000-of-00001.parquet"),
         ("AI-ModelScope/MMBench", "dev/dev-00000-of-00001.parquet"),
         ("AI-ModelScope/MMBench", "MMBench_DEV_EN/test-00000-of-00001.parquet"),
